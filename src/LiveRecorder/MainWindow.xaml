@@ -48,7 +48,7 @@
 
         <Grid Grid.Column="1" RowSpacing="16">
             <Grid.RowDefinitions>
-                <RowDefinition Height="*" />
+                <RowDefinition Height="3*" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
@@ -58,14 +58,20 @@
                         <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
-                    <Grid Padding="16,10" ColumnSpacing="16">
+                    <Grid Padding="16,6" ColumnSpacing="12" MinHeight="39">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
                             <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="媒体预览" Foreground="White" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                        <TextBlock Text="媒体预览" Foreground="White" VerticalAlignment="Center" Style="{StaticResource BodyStrongTextBlockStyle}" />
                         <TextBlock x:Name="PreviewName" Grid.Column="1" Foreground="#C1C5D0"
-                                   HorizontalAlignment="Right" TextTrimming="CharacterEllipsis" />
+                                   HorizontalAlignment="Right" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                        <Button x:Name="StopPreviewButton" Grid.Column="2" Width="30" Height="28" Padding="0"
+                                Visibility="Collapsed" RequestedTheme="Dark" Style="{StaticResource SubtleButtonStyle}"
+                                Click="StopPreview_Click" AutomationProperties.Name="关闭预览" ToolTipService.ToolTip="关闭预览">
+                            <FontIcon Glyph="&#xE711;" FontSize="13" />
+                        </Button>
                     </Grid>
                     <Grid Grid.Row="1" Background="#090A0C" Margin="5,0,5,5" CornerRadius="8">
                         <MediaPlayerElement x:Name="PreviewPlayer" Stretch="Uniform" Visibility="Collapsed"
@@ -81,45 +87,91 @@
             </Border>
 
             <Border Grid.Row="1" Style="{StaticResource Card}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
-                    <StackPanel Padding="16" Spacing="10">
-                        <TextBlock Text="操作" Style="{StaticResource SubtitleTextBlockStyle}" />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="PreviewLinkButton" Content="预览链接" Click="PreviewLink_Click" Style="{StaticResource AccentButtonStyle}" />
-                            <Button x:Name="PlayFileButton" Content="播放本地视频…" Click="PlayFile_Click" />
-                            <Button x:Name="PlayResultButton" Content="播放结果" Click="PlayResult_Click" IsEnabled="False" />
-                            <Button x:Name="StopPreviewButton" Content="关闭预览" Click="StopPreview_Click" IsEnabled="False" />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="DownloadButton" Content="下载视频" Click="Download_Click" />
-                            <Button x:Name="RecordButton" Content="录制直播" Click="Record_Click" />
-                            <Button x:Name="SdpButton" Content="从 SDP 录制" Click="RecordSdp_Click" />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button x:Name="MergeButton" Content="合并录制分片…" Click="Merge_Click" />
-                            <Button x:Name="TranscodeButton" Content="转码视频…" Click="Transcode_Click" />
-                        </StackPanel>
-                        <Border BorderThickness="0,1,0,0" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" Padding="0,10,0,0">
-                            <StackPanel Spacing="8">
-                                <Grid ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock x:Name="StatusTitle" Text="就绪" Style="{StaticResource BodyStrongTextBlockStyle}"
-                                               TextWrapping="Wrap" VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
-                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                                        <Button x:Name="StopButton" Content="停止任务" Click="Stop_Click" IsEnabled="False" />
-                                        <Button x:Name="OpenOutputButton" Content="打开文件夹" Click="OpenOutput_Click" />
+                <Grid Padding="12,10,12,8" RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="1" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ScrollViewer HorizontalScrollMode="Auto" HorizontalScrollBarVisibility="Auto"
+                                      VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Button x:Name="PreviewLinkButton" Click="PreviewLink_Click" Style="{StaticResource AccentButtonStyle}"
+                                        AutomationProperties.Name="预览链接">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE768;" FontSize="14" />
+                                        <TextBlock Text="预览链接" />
                                     </StackPanel>
-                                </Grid>
-                                <ProgressBar x:Name="TaskProgress" Minimum="0" Maximum="100" Value="0" Visibility="Collapsed" />
+                                </Button>
+                                <Button x:Name="PlayFileButton" Click="PlayFile_Click" AutomationProperties.Name="本地播放">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE8E5;" FontSize="14" />
+                                        <TextBlock Text="本地播放…" />
+                                    </StackPanel>
+                                </Button>
+                                <Border Width="1" Margin="4,5" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+                                <Button x:Name="DownloadButton" Click="Download_Click" AutomationProperties.Name="下载视频">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE896;" FontSize="14" />
+                                        <TextBlock Text="下载视频" />
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="RecordButton" Click="Record_Click" AutomationProperties.Name="录制直播">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE7C8;" FontSize="14" />
+                                        <TextBlock Text="录制直播" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </ScrollViewer>
+                        <Button Grid.Column="1" Height="32" Padding="10,0"
+                                AutomationProperties.Name="更多操作" ToolTipService.ToolTip="更多操作">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <FontIcon Glyph="&#xE712;" FontSize="14" />
+                                <TextBlock Text="更多操作" />
+                            </StackPanel>
+                            <Button.Flyout>
+                                <MenuFlyout Placement="BottomEdgeAlignedRight">
+                                    <MenuFlyoutItem x:Name="SdpButton" Text="从 SDP 录制…" Click="RecordSdp_Click" />
+                                    <MenuFlyoutSeparator />
+                                    <MenuFlyoutItem x:Name="MergeButton" Text="合并录制分片…" Click="Merge_Click" />
+                                    <MenuFlyoutItem x:Name="TranscodeButton" Text="转码视频…" Click="Transcode_Click" />
+                                    <MenuFlyoutItem x:Name="OpenOutputButton" Text="打开文件夹" Click="OpenOutput_Click" />
+                                </MenuFlyout>
+                            </Button.Flyout>
+                        </Button>
+                    </Grid>
+                    <Border Grid.Row="1" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
+                    <Grid Grid.Row="2" ColumnSpacing="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid RowSpacing="3">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <TextBlock x:Name="StatusTitle" Text="就绪" Style="{StaticResource BodyStrongTextBlockStyle}"
+                                       TextTrimming="CharacterEllipsis" AutomationProperties.LiveSetting="Polite" />
+                            <ProgressBar x:Name="TaskProgress" Grid.Row="1" Minimum="0" Maximum="100" Value="0" Visibility="Collapsed" />
+                            <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
                                 <TextBlock x:Name="StatusDetail" TextWrapping="Wrap" IsTextSelectionEnabled="True"
                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-                </ScrollViewer>
+                            </ScrollViewer>
+                        </Grid>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Top">
+                            <Button x:Name="PlayResultButton" Content="播放结果" Click="PlayResult_Click" IsEnabled="False" />
+                            <Button x:Name="StopButton" Content="停止任务" Click="Stop_Click" IsEnabled="False" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
             </Border>
         </Grid>
     </Grid>

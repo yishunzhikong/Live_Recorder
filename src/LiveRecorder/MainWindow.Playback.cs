@@ -74,7 +74,7 @@ public sealed partial class MainWindow
         _preview = session;
         PreviewName.Text = title;
         PreviewMessage.Text = "正在打开媒体…";
-        StopPreviewButton.IsEnabled = true;
+        StopPreviewButton.Visibility = Visibility.Visible;
         session.Startup = LoadAndPlayAsync();
         try { await session.Startup; }
         catch (Exception ex)
@@ -149,7 +149,7 @@ public sealed partial class MainWindow
         PreviewPlaceholder.Visibility = Visibility.Visible;
         PreviewMessage.Text = PreviewIdle;
         PreviewName.Text = "";
-        StopPreviewButton.IsEnabled = false;
+        StopPreviewButton.Visibility = Visibility.Collapsed;
         _previewCleanup = CleanupAsync(session);
         return _previewCleanup;
     }
