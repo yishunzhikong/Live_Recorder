@@ -32,7 +32,6 @@ public sealed class MediaService(string ffmpeg)
 
     public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress, CancellationToken token)
     {
-        Directory.CreateDirectory(directory);
         bool httpSource = source.Scheme is "http" or "https";
         if (httpSource && !IsPlaylistPath(source.AbsolutePath))
         {
@@ -45,6 +44,10 @@ public sealed class MediaService(string ffmpeg)
         return await WriteMediaAsync(output, NetworkInput(source, hls: httpSource), ["-c", "copy"], "matroska", progress, token)
             .ConfigureAwait(false);
     }
+
+    public static string SaveDownloadedAudio(string stagedFile, string directory, DateTime completedAt) =>
+        MoveToAvailableName(stagedFile, directory, FormattableString.Invariant($"audio_{completedAt:yyyyMMdd_HHmmss}"),
+            ".m4a", File.Move);
 
     public Task<RecordingResult> RecordAsync(Uri source, string directory, int partMegabytes, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic) =>
@@ -76,7 +79,7 @@ public sealed class MediaService(string ffmpeg)
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic)
     {
         recordingDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(recordingDirectory));
-        string[] parts = RecordingParts.Find(recordingDirectory);
+        FileInfo[] parts = RecordingParts.Find(recordingDirectory);
         if (parts.Length == 0)
             throw new InvalidOperationException("所选文件夹没有可用的 Live Recorder 录制分片。");
         string name = Path.GetFileName(recordingDirectory);
@@ -85,9 +88,10 @@ public sealed class MediaService(string ffmpeg)
             copy ? ["-c", "copy", "-bsf:a", "aac_adtstoasc"] : Encode(encoder, deinterlace), "mp4", progress, token,
             async (pipe, ct) =>
             {
-                foreach (string part in parts)
+                foreach (FileInfo part in parts)
                 {
-                    await using var file = File.OpenRead(part);
+                    await using var file = new FileStream(part.FullName, FileMode.Open, FileAccess.Read, FileShare.Read,
+                        bufferSize: 4096, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
                     await file.CopyToAsync(pipe, CopyBuffer, ct).ConfigureAwait(false);
                 }
             });
@@ -195,6 +199,7 @@ public sealed class MediaService(string ffmpeg)
             ? extension : mime switch { "video/mp4" => ".mp4", "video/webm" => ".webm", "video/mp2t" => ".ts",
                 "audio/mpeg" => ".mp3", "audio/mp4" => ".m4a", "audio/aac" => ".aac", _ => ".bin" };
         string output = NewOutput(directory, stem.Length == 0 ? "download" : "download-" + stem, safeExtension);
+        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
         string partial = output + ".part";
         long? expected = response.Content.Headers.ContentLength;
         try

@@ -7,18 +7,18 @@ internal static partial class RecordingParts
     private const int PacketSize = 188;
     private const int BufferSize = PacketSize * 512;
 
-    [GeneratedRegex(@"^part-(\d{8})\.ts$", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"^part-\d{8}\.ts$", RegexOptions.CultureInvariant)]
     private static partial Regex PartName();
 
-    public static string[] Find(string directory)
+    public static FileInfo[] Find(string directory)
     {
-        string[] files = Directory.EnumerateFiles(directory, "part-*.ts")
-            .Where(path => PartName().IsMatch(Path.GetFileName(path)))
-            .OrderBy(path => Path.GetFileName(path), StringComparer.Ordinal)
+        FileInfo[] files = new DirectoryInfo(directory).EnumerateFiles("part-*.ts")
+            .Where(file => PartName().IsMatch(file.Name))
+            .OrderBy(file => file.Name, StringComparer.Ordinal)
             .ToArray();
         for (int index = 0; index < files.Length; index++)
         {
-            var file = new FileInfo(files[index]);
+            FileInfo file = files[index];
             if (file.Name != $"part-{index + 1:D8}.ts" || file.Length == 0 || file.Length % PacketSize != 0)
                 throw new InvalidDataException("录制分片缺失或已损坏。请检查分片编号和文件大小。");
         }

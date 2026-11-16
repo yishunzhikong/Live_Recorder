@@ -29,8 +29,13 @@ internal static class FfmpegProcess
                 StandardErrorEncoding = Encoding.UTF8
             }
         };
-        foreach (string argument in new[] { "-hide_banner", "-loglevel", "warning", "-nostats", "-progress", "pipe:2" })
+        foreach (string argument in new[] { "-hide_banner", "-loglevel", "warning", "-nostats" })
             process.StartInfo.ArgumentList.Add(argument);
+        if (progress is not null)
+        {
+            process.StartInfo.ArgumentList.Add("-progress");
+            process.StartInfo.ArgumentList.Add("pipe:2");
+        }
         foreach (string argument in arguments)
             process.StartInfo.ArgumentList.Add(argument);
 
@@ -89,7 +94,7 @@ internal static class FfmpegProcess
     {
         while (await process.StandardError.ReadLineAsync().ConfigureAwait(false) is { } line)
         {
-            int separator = line.IndexOf('=');
+            int separator = progress is null ? -1 : line.IndexOf('=');
             if (separator > 0 && line[..separator].All(c => char.IsAsciiLetterOrDigit(c) || c == '_'))
             {
                 if (line.StartsWith("out_time_us=", StringComparison.Ordinal) &&

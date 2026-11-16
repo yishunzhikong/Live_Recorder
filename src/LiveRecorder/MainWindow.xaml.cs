@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using LiveRecorder.Core;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -9,12 +10,13 @@ namespace LiveRecorder;
 
 public sealed partial class MainWindow : Window
 {
+    private static readonly string BundledFfmpeg = Path.Combine(AppContext.BaseDirectory, "ffmpeg", "ffmpeg.exe");
     private readonly nint _handle;
-    private readonly MediaService _media = new(Path.Combine(AppContext.BaseDirectory, "ffmpeg", "ffmpeg.exe"));
+    private readonly MediaService _media = new(BundledFfmpeg);
     private CancellationTokenSource? _operation;
     private ContentDialog? _mergePrompt;
     private string? _lastResultFolder;
-    private int _progressVersion;
+    private DispatcherQueueTimer? _progressTimer;
     private bool _closeWhenIdle;
     private bool _closingAfterCleanup;
 
@@ -28,6 +30,7 @@ public sealed partial class MainWindow : Window
         OutputBox.Text = Path.Combine(videos, "Live Recorder");
         StatusDetail.Text = "粘贴媒体链接，或选择要处理的本地文件。";
         ModeBox.SelectionChanged += Mode_SelectionChanged;
+        SourceBox.TextChanged += (_, _) => UpdateRecordButton();
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
         WindowAspect.Apply(AppWindow, _handle);
@@ -36,6 +39,13 @@ public sealed partial class MainWindow : Window
 
     private async void Download_Click(object sender, RoutedEventArgs e) => await RunAsync("下载中", async token =>
     {
+        if (SelectedWebAudio is { } audio)
+        {
+            string audioFile = await DownloadWebAudioAsync(audio, OutputDirectory(), token);
+            ShowOutput("下载完成", audioFile);
+            return;
+        }
+
         Uri source = SelectedMediaSource();
         string output = await _media.DownloadAsync(source, OutputDirectory(), CreateProgress(), token);
         ShowOutput("下载完成", output);
@@ -134,7 +144,7 @@ public sealed partial class MainWindow : Window
         if (recording.Interruption is not null)
             summary += $"{Environment.NewLine}{recording.Interruption}";
         string title = recording.Interruption is null ? "录制完成" : "录制中断，已保留分片";
-        ++_progressVersion;
+        StopProgressUpdates();
         TaskProgress.Visibility = Visibility.Collapsed;
         StopButton.IsEnabled = false;
         SetStatus(title, summary);
@@ -184,7 +194,7 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { SetStatus("任务失败", ex.Message); }
         finally
         {
-            ++_progressVersion;
+            StopProgressUpdates();
             _operation.Dispose();
             _operation = null;
             TaskProgress.Visibility = Visibility.Collapsed;
@@ -205,13 +215,17 @@ public sealed partial class MainWindow : Window
 
     private IProgress<MediaProgress> CreateProgress()
     {
-        int version = ++_progressVersion;
+        StopProgressUpdates();
+        var updates = new PendingMediaProgress();
+        var timer = DispatcherQueue.CreateTimer();
+        timer.Interval = TimeSpan.FromMilliseconds(200);
+        timer.IsRepeating = true;
         string? size = null;
         string? parts = null;
         string? time = null;
-        return new Progress<MediaProgress>(progress =>
+        timer.Tick += (_, _) =>
         {
-            if (version != _progressVersion || _operation?.IsCancellationRequested != false)
+            if (_progressTimer != timer || _operation?.IsCancellationRequested != false || updates.Take() is not { } progress)
                 return;
             if (progress.Bytes is long bytes)
                 size = progress.TotalBytes is > 0 ? $"{bytes / 1_000_000d:0.00} / {progress.TotalBytes / 1_000_000d:0.00} MB"
@@ -225,8 +239,47 @@ public sealed partial class MainWindow : Window
                 parts = $"已保存 {count} 片";
             if (progress.MediaTime is TimeSpan duration)
                 time = $"媒体时长 {(int)duration.TotalHours:D2}:{duration.Minutes:D2}:{duration.Seconds:D2}";
-            StatusDetail.Text = string.Join("  ·  ", new[] { time, parts, size }.OfType<string>());
-        });
+            string detail = string.Join("  ·  ", new[] { time, parts, size }.OfType<string>());
+            if (StatusDetail.Text != detail)
+                StatusDetail.Text = detail;
+        };
+        _progressTimer = timer;
+        timer.Start();
+        return updates;
+    }
+
+    private void StopProgressUpdates()
+    {
+        _progressTimer?.Stop();
+        _progressTimer = null;
+    }
+
+    private sealed class PendingMediaProgress : IProgress<MediaProgress>
+    {
+        private readonly Lock _gate = new();
+        private MediaProgress? _latest;
+
+        public void Report(MediaProgress value)
+        {
+            lock (_gate)
+            {
+                _latest = _latest is { } previous
+                    ? new MediaProgress(value.Bytes ?? previous.Bytes,
+                        value.Bytes is not null ? value.TotalBytes : previous.TotalBytes,
+                        value.Parts ?? previous.Parts, value.MediaTime ?? previous.MediaTime)
+                    : value;
+            }
+        }
+
+        public MediaProgress? Take()
+        {
+            lock (_gate)
+            {
+                MediaProgress? progress = _latest;
+                _latest = null;
+                return progress;
+            }
+        }
     }
 
     private void Stop_Click(object sender, RoutedEventArgs e) => RequestStop();

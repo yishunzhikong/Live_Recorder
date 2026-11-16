@@ -13,6 +13,7 @@ public sealed partial class MainWindow
         Path.Combine(AppContext.BaseDirectory, "yt-dlp", "yt-dlp.exe"),
         Path.Combine(AppContext.BaseDirectory, "yt-dlp", "deno.exe"));
     private AppMode _mode;
+    private (Uri Source, WebVideoLink? Format)? _detectedAudio;
     private readonly (string Title, string Detail)[] _modeStatus =
     [
         ("就绪", "粘贴媒体链接，或选择要处理的本地文件。"),
@@ -28,6 +29,7 @@ public sealed partial class MainWindow
         _mode = (AppMode)ModeBox.SelectedIndex;
         SourceBox.Visibility = _mode == AppMode.Live ? Visibility.Visible : Visibility.Collapsed;
         WebSettings.Visibility = _mode == AppMode.WebVideo ? Visibility.Visible : Visibility.Collapsed;
+        UpdateRecordButton();
         var status = _modeStatus[(int)_mode];
         SetStatus(status.Title, status.Detail);
 
@@ -39,10 +41,47 @@ public sealed partial class MainWindow
     private Uri SelectedMediaSource() => _mode switch
     {
         AppMode.Live => MediaService.ParseSource(SourceBox.Text),
-        AppMode.WebVideo when WebFormatBox.SelectedItem is WebVideoLink link => MediaService.ParseSource(link.Url),
+        AppMode.WebVideo when SelectedWebFormat is { } link => MediaService.ParseSource(link.Url),
         AppMode.WebVideo => throw new ArgumentException("请先在左侧分析网页链接并选择媒体格式。"),
         _ => throw new InvalidOperationException("未知的模式。")
     };
+
+    private WebVideoLink? SelectedWebFormat => _mode == AppMode.WebVideo ? WebFormatBox.SelectedItem as WebVideoLink : null;
+
+    private WebVideoLink? SelectedWebAudio => SelectedWebFormat is { AudioOnly: true } audio ? audio : null;
+
+    private void UpdateRecordButton()
+    {
+        if (RecordButton is null)
+            return;
+
+        WebVideoLink? format = SelectedWebFormat;
+        string? address = _mode == AppMode.Live ? SourceBox.Text : format?.Url;
+        bool audioOnly = format?.AudioOnly == true ||
+            (_detectedAudio is { } detected && detected.Format == format &&
+                Uri.TryCreate(address?.Trim(), UriKind.Absolute, out Uri? source) && detected.Source.Equals(source));
+        RecordButton.Visibility = audioOnly ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private async Task<string> DownloadWebAudioAsync(WebVideoLink audio, string directory, CancellationToken token)
+    {
+        DirectoryInfo work = Directory.CreateDirectory(Path.Combine(directory, $".audio-{Guid.NewGuid():N}.part"));
+        try
+        {
+            SetStatus("正在下载音频", "yt-dlp 正在下载所选音轨并准备 M4A 文件。");
+            string file = await _webAnalyzer.DownloadAudioAsync(audio, work.FullName, BundledFfmpeg, token);
+            token.ThrowIfCancellationRequested();
+            return MediaService.SaveDownloadedAudio(file, directory, DateTime.Now);
+        }
+        finally { DeleteWebAudioFiles(work); }
+    }
+
+    private static void DeleteWebAudioFiles(DirectoryInfo folder)
+    {
+        try { folder.Delete(recursive: true); }
+        catch (IOException ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        catch (UnauthorizedAccessException ex) { System.Diagnostics.Debug.WriteLine(ex); }
+    }
 
     private string PreviewIdleMessage => _mode == AppMode.WebVideo
         ? "在左侧选择解析出的媒体直链，或打开本地视频。"
@@ -88,6 +127,7 @@ public sealed partial class MainWindow
     {
         WebFormatBox.IsEnabled = enabled && WebFormatBox.Items.Count > 0;
         CopyWebLinkButton.IsEnabled = enabled && WebFormatBox.SelectedItem is WebVideoLink;
+        UpdateRecordButton();
     }
 
     private void CopyWebLink_Click(object sender, RoutedEventArgs e)
