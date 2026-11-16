@@ -18,8 +18,11 @@ public sealed partial class MainWindow : Window
     private bool _closeWhenIdle;
     private bool _closingAfterCleanup;
 
-    public MainWindow()
+    public MainWindow() : this(null) { }
+
+    internal MainWindow(ICctvLinkResolver? cctvResolver)
     {
+        _cctvResolver = cctvResolver;
         InitializeComponent();
         _handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
         string videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
@@ -27,6 +30,11 @@ public sealed partial class MainWindow : Window
             videos = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         OutputBox.Text = Path.Combine(videos, "Live Recorder");
         StatusDetail.Text = "粘贴媒体链接，或选择要处理的本地文件。";
+        if (cctvResolver is not null)
+        {
+            CctvHint.Visibility = Visibility.Collapsed;
+            CctvSourceBox.Visibility = AnalyzeCctvButton.Visibility = Visibility.Visible;
+        }
         ModeBox.SelectionChanged += Mode_SelectionChanged;
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
@@ -36,14 +44,14 @@ public sealed partial class MainWindow : Window
 
     private async void Download_Click(object sender, RoutedEventArgs e) => await RunAsync("下载中", async token =>
     {
-        Uri source = MediaService.ParseSource(SourceBox.Text);
+        Uri source = SelectedMediaSource();
         string output = await _media.DownloadAsync(source, OutputDirectory(), CreateProgress(), token);
         ShowOutput("下载完成", output);
     });
 
     private async void Record_Click(object sender, RoutedEventArgs e) => await RunAsync("录制中", async token =>
     {
-        Uri source = MediaService.ParseSource(SourceBox.Text);
+        Uri source = SelectedMediaSource();
         string directory = OutputDirectory();
         VideoEncoder encoder = SelectedEncoder();
         if (source.Scheme is "rtp" or "udp")
@@ -275,7 +283,7 @@ public sealed partial class MainWindow : Window
 
     private void SetControlsEnabled(bool enabled)
     {
-        foreach (Control control in new Control[] { ModeBox, WebSourceBox, AnalyzeWebButton,
+        foreach (Control control in new Control[] { ModeBox, WebSourceBox, AnalyzeWebButton, CctvSourceBox, AnalyzeCctvButton,
             SourceBox, PreviewLinkButton, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
             EncoderBox, DeinterlaceBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
             control.IsEnabled = enabled;

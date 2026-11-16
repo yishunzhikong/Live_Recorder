@@ -26,7 +26,7 @@ public sealed partial class MainWindow
     private async void PreviewLink_Click(object sender, RoutedEventArgs e)
     {
         Uri source;
-        try { source = MediaService.ParseSource(SourceBox.Text); }
+        try { source = SelectedMediaSource(); }
         catch (ArgumentException ex)
         {
             if (_preview is null)
@@ -155,7 +155,7 @@ public sealed partial class MainWindow
         session.Player?.Dispose();
         PreviewTransport.Duration = TimeSpan.Zero;
         PreviewPlaceholder.Visibility = Visibility.Visible;
-        PreviewMessage.Text = PreviewIdle;
+        PreviewMessage.Text = PreviewIdleMessage;
         PreviewName.Text = "";
         StopPreviewButton.Visibility = Visibility.Collapsed;
         _previewCleanup = CleanupAsync(session);
