@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 
 namespace LiveRecorder.Core;
@@ -74,10 +75,12 @@ public sealed class MediaService(string ffmpeg)
     public Task<string> MergeAsync(string recordingDirectory, string directory, VideoEncoder encoder, bool copy,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic)
     {
+        recordingDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(recordingDirectory));
         string[] parts = RecordingParts.Find(recordingDirectory);
         if (parts.Length == 0)
             throw new InvalidOperationException("所选文件夹没有可用的 Live Recorder 录制分片。");
-        string output = NewOutput(directory, "merged", ".mp4");
+        string name = Path.GetFileName(recordingDirectory);
+        string output = Path.Combine(Path.GetFullPath(directory), (name.Length == 0 ? "record" : name) + ".mp4");
         return WriteMediaAsync(output, ["-nostdin", "-f", "mpegts", "-i", "pipe:0"],
             copy ? ["-c", "copy", "-bsf:a", "aac_adtstoasc"] : Encode(encoder, deinterlace), "mp4", progress, token,
             async (pipe, ct) =>
@@ -106,8 +109,7 @@ public sealed class MediaService(string ffmpeg)
         ArgumentOutOfRangeException.ThrowIfLessThan(partMegabytes, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(partMegabytes, 1024);
         token.ThrowIfCancellationRequested();
-        string recordingDirectory = NewOutput(directory, "recording", "");
-        Directory.CreateDirectory(recordingDirectory);
+        string recordingDirectory = CreateRecordingDirectory(directory, DateTime.Now);
         string? interruption = null;
         try
         {
@@ -137,8 +139,9 @@ public sealed class MediaService(string ffmpeg)
         IProgress<MediaProgress>? progress, CancellationToken token,
         Func<Stream, CancellationToken, Task>? writeInput = null)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(output)!);
-        string partial = output + ".part";
+        string directory = Path.GetDirectoryName(output)!;
+        Directory.CreateDirectory(directory);
+        string partial = Path.Combine(directory, $".media-{Guid.NewGuid():N}.part");
         string[] containerOptions = format == "mp4" ? ["-movflags", "+faststart"] : [];
         try
         {
@@ -148,8 +151,8 @@ public sealed class MediaService(string ffmpeg)
             if (!File.Exists(partial) || new FileInfo(partial).Length == 0)
                 throw new InvalidOperationException("FFmpeg 没有生成输出文件。");
             token.ThrowIfCancellationRequested();
-            File.Move(partial, output);
-            return output;
+            return MoveToAvailableName(partial, directory, Path.GetFileNameWithoutExtension(output),
+                Path.GetExtension(output), File.Move);
         }
         finally { File.Delete(partial); }
     }
@@ -269,4 +272,46 @@ public sealed class MediaService(string ffmpeg)
 
     private static string NewOutput(string directory, string name, string extension) =>
         Path.Combine(Path.GetFullPath(directory), $"{name}_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{extension}");
+
+    private static string CreateRecordingDirectory(string directory, DateTime startedAt)
+    {
+        directory = Directory.CreateDirectory(directory).FullName;
+        string name = "record_" + startedAt.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+        string temporary = Path.Combine(directory, $".record-{Guid.NewGuid():N}.part");
+        Directory.CreateDirectory(temporary);
+        try
+        {
+            // Directory.CreateDirectory would also succeed for an existing recording.
+            return MoveToAvailableName(temporary, directory, name, "", Directory.Move);
+        }
+        finally
+        {
+            if (Directory.Exists(temporary))
+                Directory.Delete(temporary);
+        }
+    }
+
+    private static string MoveToAvailableName(string source, string directory, string name, string extension,
+        Action<string, string> move)
+    {
+        const int fileExists = unchecked((int)0x80070050);
+        const int alreadyExists = unchecked((int)0x800700B7);
+
+        for (int count = 1; ; count++)
+        {
+            string stem = count == 1 ? name : FormattableString.Invariant($"{name} ({count})");
+            string destination = Path.Combine(directory, stem + extension);
+            if (Path.Exists(destination))
+                continue;
+            try
+            {
+                move(source, destination);
+                return destination;
+            }
+            catch (IOException ex) when (ex.HResult is fileExists or alreadyExists || Path.Exists(destination))
+            {
+                // Another task may have claimed the name after the existence check.
+            }
+        }
+    }
 }
