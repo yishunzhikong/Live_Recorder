@@ -66,9 +66,10 @@ public sealed partial class MainWindow
         }
 
         CctvQuality quality = SelectedCctvQuality();
+        bool allowLowerQuality = CctvAllowLowerQualityBox.IsChecked == true;
         await OpenPreviewAsync(episode.Title, null, async session =>
         {
-            CctvMediaLink source = await _cctvResolver.ResolveAsync(episode, quality, session.Cancellation.Token);
+            CctvMediaLink source = await _cctvResolver.ResolveAsync(episode, quality, session.Cancellation.Token, allowLowerQuality);
             if (_preview == session)
             {
                 PreviewName.Text = $"{episode.Title} · {source.Quality?.Label ?? "HLS"}";

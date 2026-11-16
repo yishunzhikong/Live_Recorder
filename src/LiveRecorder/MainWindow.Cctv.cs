@@ -41,7 +41,7 @@ public sealed partial class MainWindow
     {
         if (link.Quality is not { } quality)
             return "HLS 直链";
-        return $"实际使用 {quality.Label} · 央视清单 {string.Join("、", link.ListedQualities.Select(level => level.Label))}";
+        return $"实际使用 {quality.Label} {link.Dimensions} · 央视清单 {string.Join("、", link.ListedQualities.Select(level => level.Label))}";
     }
 
     private CctvEpisode[] SelectedCctvEpisodes()
@@ -56,6 +56,7 @@ public sealed partial class MainWindow
     {
         CctvEpisode[] episodes = SelectedCctvEpisodes();
         CctvQuality quality = SelectedCctvQuality();
+        bool allowLowerQuality = CctvAllowLowerQualityBox.IsChecked == true;
         string directory = OutputDirectory();
         int completed = 0;
         int downgraded = 0;
@@ -69,7 +70,7 @@ public sealed partial class MainWindow
             try
             {
                 token.ThrowIfCancellationRequested();
-                CctvMediaLink source = await _cctvResolver.ResolveAsync(episode, quality, token);
+                CctvMediaLink source = await _cctvResolver.ResolveAsync(episode, quality, token, allowLowerQuality);
                 SetStatus($"{stage} · {source.Quality?.Label ?? "HLS"}", episode.Title);
                 string output = await _media.DownloadAsync(source.Url, directory, CreateProgress(), token, episode.Title);
                 ShowOutput("下载完成", output);

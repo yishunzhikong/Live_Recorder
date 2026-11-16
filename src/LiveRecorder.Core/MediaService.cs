@@ -52,6 +52,36 @@ public sealed class MediaService(string ffmpeg)
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic) =>
         RecordAsync(NetworkInput(source), directory, partMegabytes, encoder, progress, token, deinterlace);
 
+    public async Task<VideoDimensions> ProbeVideoAsync(Uri source, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(12));
+        VideoDimensions? dimensions = null;
+        await FfmpegProcess.RunAsync(ffmpeg,
+            ["-xerror", .. NetworkInput(source, hls: true), "-map", "0:V:0", "-an", "-sn", "-dn",
+                "-frames:v", "1", "-c:v", "rawvideo", "-threads:v", "1", "-f", "framehash", "pipe:1"],
+            null, timeout.Token, readOutput: async stream =>
+            {
+                using var reader = new StreamReader(stream, leaveOpen: true);
+                const string prefix = "#dimensions 0: ";
+                bool frameWritten = false;
+                while (await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false) is { } line)
+                {
+                    if (line.StartsWith(prefix, StringComparison.Ordinal))
+                    {
+                        string[] parts = line[prefix.Length..].Split('x');
+                        if (parts.Length == 2 && int.TryParse(parts[0], out int width) && int.TryParse(parts[1], out int height))
+                            dimensions = new VideoDimensions(width, height);
+                    }
+                    else if (line.StartsWith("0,", StringComparison.Ordinal))
+                        frameWritten = true;
+                }
+                if (!frameWritten)
+                    dimensions = null;
+            }).ConfigureAwait(false);
+        return dimensions ?? throw new InvalidDataException("视频源未能解码出完整画面。");
+    }
+
     public Task CreateLivePreviewAsync(Uri source, string directory, CancellationToken token) =>
         FfmpegProcess.RunAsync(ffmpeg,
             [.. NetworkInput(source), .. MapStreams(),

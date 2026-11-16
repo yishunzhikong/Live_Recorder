@@ -18,11 +18,11 @@ public sealed partial class MainWindow : Window
     private bool _closeWhenIdle;
     private bool _closingAfterCleanup;
 
-    public MainWindow() : this(new CctvLinkResolver()) { }
+    public MainWindow() : this(null) { }
 
-    internal MainWindow(ICctvLinkResolver cctvResolver)
+    internal MainWindow(ICctvLinkResolver? cctvResolver)
     {
-        _cctvResolver = cctvResolver;
+        _cctvResolver = cctvResolver ?? new CctvLinkResolver(_media.ProbeVideoAsync);
         InitializeComponent();
         CctvQualityBox.ItemsSource = CctvQuality.All;
         CctvQualityBox.SelectedIndex = 0;
@@ -54,7 +54,8 @@ public sealed partial class MainWindow : Window
     private async void Record_Click(object sender, RoutedEventArgs e) => await RunAsync("录制中", async token =>
     {
         Uri source = _mode == AppMode.Cctv
-            ? (await _cctvResolver.ResolveAsync(SelectedCctvEpisodes()[0], SelectedCctvQuality(), token)).Url
+            ? (await _cctvResolver.ResolveAsync(SelectedCctvEpisodes()[0], SelectedCctvQuality(), token,
+                CctvAllowLowerQualityBox.IsChecked == true)).Url
             : SelectedMediaSource();
         string directory = OutputDirectory();
         VideoEncoder encoder = SelectedEncoder();
@@ -288,7 +289,8 @@ public sealed partial class MainWindow : Window
     private void SetControlsEnabled(bool enabled)
     {
         foreach (Control control in new Control[] { ModeBox, WebSourceBox, AnalyzeWebButton,
-            CctvSourceBox, CctvIncludeAlbumBox, AnalyzeCctvButton, CctvQualityBox, CctvEpisodeList, SelectAllCctvButton, ClearCctvButton,
+            CctvSourceBox, CctvIncludeAlbumBox, AnalyzeCctvButton, CctvQualityBox, CctvAllowLowerQualityBox,
+            CctvEpisodeList, SelectAllCctvButton, ClearCctvButton,
             SourceBox, PreviewLinkButton, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
             EncoderBox, DeinterlaceBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
             control.IsEnabled = enabled;

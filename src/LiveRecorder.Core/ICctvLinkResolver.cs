@@ -8,10 +8,16 @@ public sealed record CctvQuality(int Code, string Label)
         [new(4000, "4K"), new(2000, "超清"), new(1200, "高清"), new(850, "标清"), new(450, "流畅")]);
 }
 
-public sealed record CctvMediaLink(Uri Url, CctvQuality? Quality, IReadOnlyList<CctvQuality> ListedQualities);
+public sealed record VideoDimensions(int Width, int Height)
+{
+    public override string ToString() => $"{Width}×{Height}";
+}
+
+public sealed record CctvMediaLink(Uri Url, CctvQuality? Quality, IReadOnlyList<CctvQuality> ListedQualities,
+    VideoDimensions? Dimensions = null);
 
 public interface ICctvLinkResolver
 {
     Task<IReadOnlyList<CctvEpisode>> GetEpisodesAsync(Uri page, bool includeAlbum, CancellationToken token);
-    Task<CctvMediaLink> ResolveAsync(CctvEpisode episode, CctvQuality quality, CancellationToken token);
+    Task<CctvMediaLink> ResolveAsync(CctvEpisode episode, CctvQuality quality, CancellationToken token, bool allowLowerQuality = false);
 }

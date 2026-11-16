@@ -49,6 +49,7 @@
                         <CheckBox x:Name="CctvIncludeAlbumBox" Content="从节目页查找所属专辑" />
                         <Button x:Name="AnalyzeCctvButton" Content="解析链接" Click="AnalyzeCctv_Click" />
                         <ComboBox x:Name="CctvQualityBox" Header="分辨率" HorizontalAlignment="Stretch" DisplayMemberPath="Label" />
+                        <CheckBox x:Name="CctvAllowLowerQualityBox" Content="所选档位不可用时允许降档" />
                         <StackPanel x:Name="CctvEpisodePanel" Spacing="6" Visibility="Collapsed">
                             <TextBlock Text="剧集" />
                             <StackPanel Orientation="Horizontal" Spacing="8">
