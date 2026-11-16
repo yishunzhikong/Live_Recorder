@@ -92,12 +92,19 @@ public sealed partial class MainWindow
 
             var player = new MediaPlayer { AutoPlay = true };
             session.Player = player;
+            MediaPlaybackSession playback = player.PlaybackSession;
+            playback.NaturalDurationChanged += (_, _) => DispatcherQueue.TryEnqueue(() =>
+            {
+                if (_preview == session)
+                    PreviewTransport.Duration = playback.NaturalDuration;
+            });
             player.MediaOpened += (_, _) => DispatcherQueue.TryEnqueue(() =>
             {
                 if (_preview != session)
                     return;
                 PreviewPlaceholder.Visibility = Visibility.Collapsed;
                 PreviewPlayer.Visibility = Visibility.Visible;
+                PreviewTransport.Duration = playback.NaturalDuration;
             });
             player.MediaFailed += (sender, args) =>
             {
@@ -146,6 +153,7 @@ public sealed partial class MainWindow
         PreviewPlayer.Visibility = Visibility.Collapsed;
         PreviewPlayer.SetMediaPlayer(null);
         session.Player?.Dispose();
+        PreviewTransport.Duration = TimeSpan.Zero;
         PreviewPlaceholder.Visibility = Visibility.Visible;
         PreviewMessage.Text = PreviewIdle;
         PreviewName.Text = "";
