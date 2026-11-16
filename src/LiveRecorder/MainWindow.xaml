@@ -25,7 +25,6 @@
                     <ComboBox x:Name="ModeBox" Header="模式" HorizontalAlignment="Stretch" SelectedIndex="0">
                         <ComboBoxItem Content="直播录制" />
                         <ComboBoxItem Content="yt-dlp" />
-                        <ComboBoxItem Content="CCTV" />
                     </ComboBox>
                     <TextBox x:Name="SourceBox" Header="媒体链接" PlaceholderText="HTTP、M3U8、RTSP、RTMP 或 RTP"
                              InputScope="Url" />
@@ -42,29 +41,6 @@
                                   SelectionChanged="WebFormat_SelectionChanged" />
                         <TextBox x:Name="WebLinkBox" Header="直链" IsReadOnly="True" TextWrapping="Wrap"
                                  Height="60" PlaceholderText="所选格式的地址将在这里显示" />
-                    </StackPanel>
-                    <StackPanel x:Name="CctvSettings" Spacing="10" Visibility="Collapsed">
-                        <TextBox x:Name="CctvSourceBox" Header="CCTV 链接" InputScope="Url" PlaceholderText="粘贴节目页或专辑页地址"
-                                 TextChanged="CctvSource_TextChanged" />
-                        <CheckBox x:Name="CctvIncludeAlbumBox" Content="从节目页查找所属专辑" />
-                        <Button x:Name="AnalyzeCctvButton" Content="解析链接" Click="AnalyzeCctv_Click" />
-                        <ComboBox x:Name="CctvQualityBox" Header="分辨率" HorizontalAlignment="Stretch" DisplayMemberPath="Label" />
-                        <CheckBox x:Name="CctvAllowLowerQualityBox" Content="所选档位不可用时允许降档" />
-                        <StackPanel x:Name="CctvEpisodePanel" Spacing="6" Visibility="Collapsed">
-                            <TextBlock Text="剧集" />
-                            <StackPanel Orientation="Horizontal" Spacing="8">
-                                <Button x:Name="SelectAllCctvButton" Content="全选" Click="SelectAllCctv_Click" />
-                                <Button x:Name="ClearCctvButton" Content="清空选择" Click="ClearCctv_Click" />
-                            </StackPanel>
-                            <ListView x:Name="CctvEpisodeList" MaxHeight="202" SelectionMode="Multiple"
-                                      AutomationProperties.Name="CCTV 剧集">
-                                <ListView.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding Title}" TextWrapping="Wrap" Margin="0,4" />
-                                    </DataTemplate>
-                                </ListView.ItemTemplate>
-                            </ListView>
-                        </StackPanel>
                     </StackPanel>
                     <StackPanel Spacing="16">
                         <Grid ColumnSpacing="8">

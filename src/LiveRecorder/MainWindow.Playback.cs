@@ -25,12 +25,6 @@ public sealed partial class MainWindow
 
     private async void PreviewLink_Click(object sender, RoutedEventArgs e)
     {
-        if (_mode == AppMode.Cctv)
-        {
-            await PreviewCctvAsync();
-            return;
-        }
-
         Uri source;
         try { source = SelectedMediaSource(); }
         catch (ArgumentException ex)
@@ -49,33 +43,6 @@ public sealed partial class MainWindow
 
             session.Relay = await LivePreview.StartAsync(_media, source, session.Cancellation.Token);
             return MediaSource.CreateFromUri(session.Relay.Playlist);
-        });
-    }
-
-    private async Task PreviewCctvAsync()
-    {
-        CctvEpisode episode;
-        try { episode = SelectedCctvEpisodes()[0]; }
-        catch (ArgumentException ex)
-        {
-            if (_preview is null)
-                PreviewMessage.Text = ex.Message;
-            else
-                SetStatus("无法打开预览链接", ex.Message);
-            return;
-        }
-
-        CctvQuality quality = SelectedCctvQuality();
-        bool allowLowerQuality = CctvAllowLowerQualityBox.IsChecked == true;
-        await OpenPreviewAsync(episode.Title, null, async session =>
-        {
-            CctvMediaLink source = await _cctvResolver.ResolveAsync(episode, quality, session.Cancellation.Token, allowLowerQuality);
-            if (_preview == session)
-            {
-                PreviewName.Text = $"{episode.Title} · {source.Quality?.Label ?? "HLS"}";
-                SetStatus("CCTV 链接已解析", CctvSourceDetail(source));
-            }
-            return MediaSource.CreateFromUri(source.Url);
         });
     }
 

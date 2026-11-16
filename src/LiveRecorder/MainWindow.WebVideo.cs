@@ -7,7 +7,7 @@ namespace LiveRecorder;
 
 public sealed partial class MainWindow
 {
-    private enum AppMode { Live, WebVideo, Cctv }
+    private enum AppMode { Live, WebVideo }
 
     private readonly WebVideoAnalyzer _webAnalyzer = new(
         Path.Combine(AppContext.BaseDirectory, "yt-dlp", "yt-dlp.exe"),
@@ -16,8 +16,7 @@ public sealed partial class MainWindow
     private readonly (string Title, string Detail)[] _modeStatus =
     [
         ("就绪", "粘贴媒体链接，或选择要处理的本地文件。"),
-        ("就绪", "在左侧输入网页视频链接，分析后可使用右侧预览。"),
-        ("就绪", "在左侧解析央视节目或专辑，勾选剧集后可预览或下载。")
+        ("就绪", "在左侧输入网页视频链接，分析后可使用右侧预览。")
     ];
 
     private async void Mode_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -29,7 +28,6 @@ public sealed partial class MainWindow
         _mode = (AppMode)ModeBox.SelectedIndex;
         SourceBox.Visibility = _mode == AppMode.Live ? Visibility.Visible : Visibility.Collapsed;
         WebSettings.Visibility = _mode == AppMode.WebVideo ? Visibility.Visible : Visibility.Collapsed;
-        CctvSettings.Visibility = _mode == AppMode.Cctv ? Visibility.Visible : Visibility.Collapsed;
         var status = _modeStatus[(int)_mode];
         SetStatus(status.Title, status.Detail);
 
@@ -43,15 +41,12 @@ public sealed partial class MainWindow
         AppMode.Live => MediaService.ParseSource(SourceBox.Text),
         AppMode.WebVideo when WebFormatBox.SelectedItem is WebVideoLink link => MediaService.ParseSource(link.Url),
         AppMode.WebVideo => throw new ArgumentException("请先在左侧分析网页链接并选择媒体格式。"),
-        _ => throw new InvalidOperationException("当前模式需要异步解析媒体链接。")
+        _ => throw new InvalidOperationException("未知的模式。")
     };
 
-    private string PreviewIdleMessage => _mode switch
-    {
-        AppMode.WebVideo => "在左侧选择解析出的媒体直链，或打开本地视频。",
-        AppMode.Cctv => "在左侧解析 CCTV 链接并勾选剧集，或打开本地视频。",
-        _ => PreviewIdle
-    };
+    private string PreviewIdleMessage => _mode == AppMode.WebVideo
+        ? "在左侧选择解析出的媒体直链，或打开本地视频。"
+        : PreviewIdle;
 
     private void WebSource_TextChanged(object sender, TextChangedEventArgs e)
     {

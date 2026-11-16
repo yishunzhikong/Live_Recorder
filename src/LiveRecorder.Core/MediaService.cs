@@ -30,20 +30,18 @@ public sealed class MediaService(string ffmpeg)
         return uri;
     }
 
-    public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress,
-        CancellationToken token, string? outputTitle = null)
+    public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress, CancellationToken token)
     {
         Directory.CreateDirectory(directory);
         bool httpSource = source.Scheme is "http" or "https";
         if (httpSource && !IsPlaylistPath(source.AbsolutePath))
         {
-            string? directFile = await TryDownloadHttpAsync(source, directory, progress, token, outputTitle).ConfigureAwait(false);
+            string? directFile = await TryDownloadHttpAsync(source, directory, progress, token).ConfigureAwait(false);
             if (directFile is not null)
                 return directFile;
         }
 
-        string output = outputTitle is null ? NewOutput(directory, "download", ".mkv")
-            : Path.Combine(Path.GetFullPath(directory), EpisodeFileName(outputTitle) + ".mkv");
+        string output = NewOutput(directory, "download", ".mkv");
         return await WriteMediaAsync(output, NetworkInput(source, hls: httpSource), ["-c", "copy"], "matroska", progress, token)
             .ConfigureAwait(false);
     }
@@ -51,36 +49,6 @@ public sealed class MediaService(string ffmpeg)
     public Task<RecordingResult> RecordAsync(Uri source, string directory, int partMegabytes, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic) =>
         RecordAsync(NetworkInput(source), directory, partMegabytes, encoder, progress, token, deinterlace);
-
-    public async Task<VideoDimensions> ProbeVideoAsync(Uri source, CancellationToken token)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(12));
-        VideoDimensions? dimensions = null;
-        await FfmpegProcess.RunAsync(ffmpeg,
-            ["-xerror", .. NetworkInput(source, hls: true), "-map", "0:V:0", "-an", "-sn", "-dn",
-                "-frames:v", "1", "-c:v", "rawvideo", "-threads:v", "1", "-f", "framehash", "pipe:1"],
-            null, timeout.Token, readOutput: async stream =>
-            {
-                using var reader = new StreamReader(stream, leaveOpen: true);
-                const string prefix = "#dimensions 0: ";
-                bool frameWritten = false;
-                while (await reader.ReadLineAsync(timeout.Token).ConfigureAwait(false) is { } line)
-                {
-                    if (line.StartsWith(prefix, StringComparison.Ordinal))
-                    {
-                        string[] parts = line[prefix.Length..].Split('x');
-                        if (parts.Length == 2 && int.TryParse(parts[0], out int width) && int.TryParse(parts[1], out int height))
-                            dimensions = new VideoDimensions(width, height);
-                    }
-                    else if (line.StartsWith("0,", StringComparison.Ordinal))
-                        frameWritten = true;
-                }
-                if (!frameWritten)
-                    dimensions = null;
-            }).ConfigureAwait(false);
-        return dimensions ?? throw new InvalidDataException("视频源未能解码出完整画面。");
-    }
 
     public Task CreateLivePreviewAsync(Uri source, string directory, CancellationToken token) =>
         FfmpegProcess.RunAsync(ffmpeg,
@@ -190,7 +158,7 @@ public sealed class MediaService(string ffmpeg)
     }
 
     private static async Task<string?> TryDownloadHttpAsync(Uri source, string directory,
-        IProgress<MediaProgress>? progress, CancellationToken token, string? outputTitle)
+        IProgress<MediaProgress>? progress, CancellationToken token)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
@@ -257,8 +225,6 @@ public sealed class MediaService(string ffmpeg)
                 throw new IOException("下载字节数与服务器声明的大小不一致。");
             progress?.Report(new MediaProgress(Bytes: received, TotalBytes: expected));
             token.ThrowIfCancellationRequested();
-            if (outputTitle is not null)
-                return MoveToAvailableName(partial, Path.GetFullPath(directory), EpisodeFileName(outputTitle), safeExtension, File.Move);
             File.Move(partial, output);
             return output;
         }
@@ -278,14 +244,6 @@ public sealed class MediaService(string ffmpeg)
     }
 
     private static bool IsPlaylistPath(string path) => Path.GetExtension(path).ToLowerInvariant() is ".m3u8" or ".m3u";
-
-    private static string EpisodeFileName(string title)
-    {
-        char[] invalid = Path.GetInvalidFileNameChars();
-        string name = string.Concat(title.Take(100).Select(character => invalid.Contains(character) ? '_' : character))
-            .Trim(' ', '.');
-        return name.Length == 0 ? "CCTV 节目" : "CCTV - " + name;
-    }
 
     private static string[] MapStreams() => ["-map", "0:V:0?", "-map", "0:a:0?", "-sn", "-dn"];
 
