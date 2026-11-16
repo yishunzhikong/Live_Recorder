@@ -1,0 +1,322 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using LiveRecorder.Core;
+using Microsoft.UI.Windowing;
+using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Windows.Graphics;
+using Windows.Storage.Pickers;
+
+namespace LiveRecorder;
+
+public sealed partial class MainWindow : Window
+{
+    private readonly nint _handle;
+    private CancellationTokenSource? _operation;
+    private ContentDialog? _mergePrompt;
+    private string? _lastResultFolder;
+    private int _progressVersion;
+    private bool _closeWhenIdle;
+
+    public MainWindow()
+    {
+        InitializeComponent();
+        _handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        string videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+        if (string.IsNullOrWhiteSpace(videos))
+            videos = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        OutputBox.Text = Path.Combine(videos, "Live Recorder");
+        StatusDetail.Text = "粘贴媒体链接，或选择要处理的本地文件。";
+
+        double scale = Math.Max(96u, GetDpiForWindow(_handle)) / 96.0;
+        RectInt32 workArea = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
+        AppWindow.Resize(new SizeInt32(
+            Math.Min((int)(880 * scale), workArea.Width),
+            Math.Min((int)(940 * scale), workArea.Height)));
+        AppWindow.Closing += Window_Closing;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(nint hwnd);
+
+    private async void Download_Click(object sender, RoutedEventArgs e) => await RunAsync("下载中", async token =>
+    {
+        Uri source = MediaService.ParseSource(SourceBox.Text);
+        string output = await Service().DownloadAsync(source, OutputDirectory(), CreateProgress(), token);
+        ShowOutput("下载完成", output);
+    });
+
+    private async void Record_Click(object sender, RoutedEventArgs e) => await RunAsync("录制中", async token =>
+    {
+        Uri source = MediaService.ParseSource(SourceBox.Text);
+        MediaService service = Service();
+        string directory = OutputDirectory();
+        VideoEncoder encoder = SelectedEncoder();
+        RecordingResult recording = await service.RecordAsync(source, directory, PartSize(), encoder, CreateProgress(), token);
+        await FinishRecordingAsync(service, recording, directory, encoder);
+    });
+
+    private async void RecordSdp_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
+    {
+        string? file = await PickFileAsync(".sdp");
+        if (file is null)
+            return;
+        await RunAsync("录制中", async token =>
+        {
+            MediaService service = Service();
+            string directory = OutputDirectory();
+            VideoEncoder encoder = SelectedEncoder();
+            RecordingResult recording = await service.RecordSdpAsync(file, directory, PartSize(), encoder, CreateProgress(), token);
+            await FinishRecordingAsync(service, recording, directory, encoder);
+        });
+    });
+
+    private async void Merge_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
+    {
+        string? folder = await PickFolderAsync();
+        if (folder is null)
+            return;
+        await RunAsync("合并中", async token =>
+        {
+            _lastResultFolder = folder;
+            string output = await Service().MergeAsync(folder, OutputDirectory(), SelectedEncoder(),
+                ReencodeBox.IsChecked != true, CreateProgress(), token);
+            ShowOutput("合并完成", output);
+        });
+    });
+
+    private async void Transcode_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
+    {
+        string? file = await PickFileAsync("*");
+        if (file is null)
+            return;
+        await RunAsync("转码中", async token =>
+        {
+            string output = await Service().TranscodeAsync(file, OutputDirectory(), SelectedEncoder(), CreateProgress(), token);
+            ShowOutput("转码完成", output);
+        });
+    });
+
+    private async void PickOutput_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
+    {
+        if (await PickFolderAsync() is { } folder)
+        {
+            OutputBox.Text = folder;
+            _lastResultFolder = null;
+        }
+    });
+
+    private async void PickFfmpeg_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
+    {
+        if (await PickFileAsync(".exe") is { } file)
+            FfmpegBox.Text = file;
+    });
+
+    private async Task HandlePickerAsync(Func<Task> action)
+    {
+        try { await action(); }
+        catch (Exception ex) { SetStatus("无法完成操作", ex.Message); }
+    }
+
+    private async Task<string?> PickFolderAsync()
+    {
+        var picker = new FolderPicker { SuggestedStartLocation = PickerLocationId.VideosLibrary };
+        picker.FileTypeFilter.Add("*");
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, _handle);
+        return (await picker.PickSingleFolderAsync())?.Path;
+    }
+
+    private async Task<string?> PickFileAsync(string extension)
+    {
+        var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.VideosLibrary };
+        picker.FileTypeFilter.Add(extension);
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, _handle);
+        return (await picker.PickSingleFileAsync())?.Path;
+    }
+
+    private async Task FinishRecordingAsync(MediaService service, RecordingResult recording, string directory, VideoEncoder encoder)
+    {
+        _lastResultFolder = recording.Directory;
+        string summary = $"已保存 {recording.PartCount} 个分片。{Environment.NewLine}{recording.Directory}";
+        if (recording.Interruption is not null)
+            summary += $"{Environment.NewLine}{recording.Interruption}";
+        string title = recording.Interruption is null ? "录制完成" : "录制中断，已保留分片";
+        ++_progressVersion;
+        TaskProgress.Visibility = Visibility.Collapsed;
+        StopButton.IsEnabled = false;
+        SetStatus(title, summary);
+        if (_closeWhenIdle)
+            return;
+
+        _mergePrompt = new ContentDialog
+        {
+            XamlRoot = ((FrameworkElement)Content).XamlRoot,
+            Title = "合并录制分片？",
+            Content = new TextBlock { Text = summary, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true },
+            PrimaryButtonText = "原样合并",
+            SecondaryButtonText = "重新编码后合并",
+            CloseButtonText = "保留分片",
+            DefaultButton = ContentDialogButton.Primary
+        };
+        ContentDialogResult choice;
+        try { choice = await _mergePrompt.ShowAsync(); }
+        finally { _mergePrompt = null; }
+        if (choice == ContentDialogResult.None || _closeWhenIdle)
+            return;
+
+        _operation!.Dispose();
+        _operation = new CancellationTokenSource();
+        StartStage("合并中");
+        string output = await service.MergeAsync(recording.Directory, directory, encoder,
+            choice == ContentDialogResult.Primary, CreateProgress(), _operation.Token);
+        ShowOutput("合并完成", output);
+    }
+
+    private async Task RunAsync(string title, Func<CancellationToken, Task> action)
+    {
+        if (_operation is not null)
+            return;
+        _operation = new CancellationTokenSource();
+        SetControlsEnabled(false);
+        StartStage(title);
+        try { await action(_operation.Token); }
+        catch (OperationCanceledException)
+        {
+            if (_operation.IsCancellationRequested)
+                SetStatus("已停止", "任务已停止。");
+            else
+                SetStatus("连接超时", "服务器长时间未返回媒体数据。请检查链接和网络连接。");
+        }
+        catch (Exception ex) { SetStatus("任务失败", ex.Message); }
+        finally
+        {
+            ++_progressVersion;
+            _operation.Dispose();
+            _operation = null;
+            TaskProgress.Visibility = Visibility.Collapsed;
+            StopButton.IsEnabled = false;
+            SetControlsEnabled(true);
+            if (_closeWhenIdle)
+                Close();
+        }
+    }
+
+    private void StartStage(string title)
+    {
+        StopButton.IsEnabled = true;
+        TaskProgress.IsIndeterminate = true;
+        TaskProgress.Value = 0;
+        TaskProgress.Visibility = Visibility.Visible;
+        SetStatus(title, "正在读取媒体…");
+    }
+
+    private IProgress<MediaProgress> CreateProgress()
+    {
+        int version = ++_progressVersion;
+        string? size = null;
+        string? parts = null;
+        string? time = null;
+        return new Progress<MediaProgress>(progress =>
+        {
+            if (version != _progressVersion || _operation?.IsCancellationRequested != false)
+                return;
+            if (progress.Bytes is long bytes)
+                size = progress.TotalBytes is > 0 ? $"{bytes / 1_000_000d:0.00} / {progress.TotalBytes / 1_000_000d:0.00} MB"
+                    : $"{bytes / 1_000_000d:0.00} MB";
+            if (progress.TotalBytes is > 0 && progress.Bytes is long received)
+            {
+                TaskProgress.IsIndeterminate = false;
+                TaskProgress.Value = Math.Clamp(received * 100d / progress.TotalBytes.Value, 0, 100);
+            }
+            if (progress.Parts is int count)
+                parts = $"已保存 {count} 片";
+            if (progress.MediaTime is TimeSpan duration)
+                time = $"媒体时长 {(int)duration.TotalHours:D2}:{duration.Minutes:D2}:{duration.Seconds:D2}";
+            StatusDetail.Text = string.Join("  ·  ", new[] { time, parts, size }.OfType<string>());
+        });
+    }
+
+    private void Stop_Click(object sender, RoutedEventArgs e) => RequestStop();
+
+    private void RequestStop()
+    {
+        if (_operation?.IsCancellationRequested != false)
+            return;
+        StopButton.IsEnabled = false;
+        SetStatus("正在停止", "正在关闭媒体连接并处理已写入的数据…");
+        _operation.Cancel();
+    }
+
+    private void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (_operation is null)
+            return;
+        args.Cancel = true;
+        _closeWhenIdle = true;
+        _mergePrompt?.Hide();
+        RequestStop();
+    }
+
+    private void OpenOutput_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string directory = _lastResultFolder ?? OutputDirectory();
+            Directory.CreateDirectory(directory);
+            Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true })?.Dispose();
+        }
+        catch (Exception ex) { SetStatus("无法打开文件夹", ex.Message); }
+    }
+
+    private void SetControlsEnabled(bool enabled)
+    {
+        foreach (Control control in new Control[] { SourceBox, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
+            EncoderBox, PartSizeBox, FfmpegBox, FfmpegPickerButton, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
+            control.IsEnabled = enabled;
+    }
+
+    private void SetStatus(string title, string detail)
+    {
+        StatusTitle.Text = title;
+        StatusDetail.Text = detail;
+    }
+
+    private void ShowOutput(string title, string file)
+    {
+        _lastResultFolder = Path.GetDirectoryName(file);
+        SetStatus(title, file);
+    }
+
+    private string OutputDirectory()
+    {
+        string directory = Environment.ExpandEnvironmentVariables(OutputBox.Text.Trim().Trim('"'));
+        if (!Path.IsPathFullyQualified(directory))
+            throw new ArgumentException("请选择有效的输出文件夹。");
+        return Path.GetFullPath(directory);
+    }
+
+    private int PartSize()
+    {
+        double size = PartSizeBox.Value;
+        if (!double.IsFinite(size) || size != Math.Truncate(size) || size is < 1 or > 1024)
+            throw new ArgumentException("请将分片大小设为 1 到 1024 MB 的整数。");
+        return (int)size;
+    }
+
+    private VideoEncoder SelectedEncoder() => (VideoEncoder)EncoderBox.SelectedIndex;
+
+    private MediaService Service()
+    {
+        string path = Environment.ExpandEnvironmentVariables(FfmpegBox.Text.Trim().Trim('"'));
+        if (path.Length == 0)
+        {
+            string bundled = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
+            path = File.Exists(bundled) ? bundled : "ffmpeg.exe";
+        }
+        else if (!Path.IsPathFullyQualified(path) || !File.Exists(path))
+        {
+            throw new FileNotFoundException("请选择存在的 FFmpeg 可执行文件。");
+        }
+        return new MediaService(path);
+    }
+}

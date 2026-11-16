@@ -1,0 +1,8 @@
+/Request.md
+**/bin/
+**/obj/
+/.tools/
+/artifacts/
+/.vs/
+*.user
+*.suo
