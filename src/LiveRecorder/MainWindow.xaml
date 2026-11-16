@@ -38,6 +38,12 @@
                         <ComboBoxItem Content="NVIDIA · NVENC" />
                         <ComboBoxItem Content="AMD · AMF" />
                     </ComboBox>
+                    <ComboBox x:Name="DeinterlaceBox" Header="去隔行" HorizontalAlignment="Stretch" SelectedIndex="0"
+                              ToolTipService.ToolTip="用于录制、转码和手动重新编码合并。画面仍有梳齿时可选强制。">
+                        <ComboBoxItem Content="自动（依据视频标记）" />
+                        <ComboBoxItem Content="强制去隔行" />
+                        <ComboBoxItem Content="关闭" />
+                    </ComboBox>
                     <NumberBox x:Name="PartSizeBox" Header="录制分片大小（MB）" Value="1" Minimum="1" Maximum="1024"
                                SpinButtonPlacementMode="Compact" HorizontalAlignment="Stretch" />
                     <CheckBox x:Name="ReencodeBox">

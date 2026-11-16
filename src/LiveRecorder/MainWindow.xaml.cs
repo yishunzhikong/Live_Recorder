@@ -47,7 +47,8 @@ public sealed partial class MainWindow : Window
         VideoEncoder encoder = SelectedEncoder();
         if (source.Scheme is "rtp" or "udp")
             await ReleaseDatagramPreviewAsync(source);
-        RecordingResult recording = await _media.RecordAsync(source, directory, PartSize(), encoder, CreateProgress(), token);
+        RecordingResult recording = await _media.RecordAsync(source, directory, PartSize(), encoder,
+            CreateProgress(), token, SelectedDeinterlaceMode());
         await FinishRecordingAsync(recording, directory, encoder);
     });
 
@@ -61,7 +62,8 @@ public sealed partial class MainWindow : Window
             string directory = OutputDirectory();
             VideoEncoder encoder = SelectedEncoder();
             await ReleaseDatagramPreviewAsync();
-            RecordingResult recording = await _media.RecordSdpAsync(file, directory, PartSize(), encoder, CreateProgress(), token);
+            RecordingResult recording = await _media.RecordSdpAsync(file, directory, PartSize(), encoder,
+                CreateProgress(), token, SelectedDeinterlaceMode());
             await FinishRecordingAsync(recording, directory, encoder);
         });
     });
@@ -75,7 +77,7 @@ public sealed partial class MainWindow : Window
         {
             _lastResultFolder = folder;
             string output = await _media.MergeAsync(folder, OutputDirectory(), SelectedEncoder(),
-                ReencodeBox.IsChecked != true, CreateProgress(), token);
+                ReencodeBox.IsChecked != true, CreateProgress(), token, SelectedDeinterlaceMode());
             ShowOutput("合并完成", output);
         });
     });
@@ -87,7 +89,8 @@ public sealed partial class MainWindow : Window
             return;
         await RunAsync("转码中", async token =>
         {
-            string output = await _media.TranscodeAsync(file, OutputDirectory(), SelectedEncoder(), CreateProgress(), token);
+            string output = await _media.TranscodeAsync(file, OutputDirectory(), SelectedEncoder(),
+                CreateProgress(), token, SelectedDeinterlaceMode());
             ShowOutput("转码完成", output);
         });
     });
@@ -156,8 +159,9 @@ public sealed partial class MainWindow : Window
         _operation!.Dispose();
         _operation = new CancellationTokenSource();
         StartStage("合并中");
+        // The current recording already applied the selected deinterlacing mode.
         string output = await _media.MergeAsync(recording.Directory, directory, encoder,
-            choice == ContentDialogResult.Primary, CreateProgress(), _operation.Token);
+            choice == ContentDialogResult.Primary, CreateProgress(), _operation.Token, DeinterlaceMode.Off);
         ShowOutput("合并完成", output);
     }
 
@@ -271,7 +275,7 @@ public sealed partial class MainWindow : Window
     private void SetControlsEnabled(bool enabled)
     {
         foreach (Control control in new Control[] { SourceBox, PreviewLinkButton, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
-            EncoderBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
+            EncoderBox, DeinterlaceBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
             control.IsEnabled = enabled;
     }
 
@@ -306,4 +310,6 @@ public sealed partial class MainWindow : Window
     }
 
     private VideoEncoder SelectedEncoder() => (VideoEncoder)EncoderBox.SelectedIndex;
+
+    private DeinterlaceMode SelectedDeinterlaceMode() => (DeinterlaceMode)DeinterlaceBox.SelectedIndex;
 }

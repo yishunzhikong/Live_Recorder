@@ -4,6 +4,7 @@ using System.Text;
 namespace LiveRecorder.Core;
 
 public enum VideoEncoder { Software, Intel, Nvidia, Amd }
+public enum DeinterlaceMode { Automatic, Always, Off }
 
 public sealed record MediaProgress(long? Bytes = null, long? TotalBytes = null, int? Parts = null, TimeSpan? MediaTime = null);
 public sealed record RecordingResult(string Directory, int PartCount, string? Interruption);
@@ -45,13 +46,13 @@ public sealed class MediaService(string ffmpeg)
     }
 
     public Task<RecordingResult> RecordAsync(Uri source, string directory, int partMegabytes, VideoEncoder encoder,
-        IProgress<MediaProgress>? progress, CancellationToken token) =>
-        RecordAsync(NetworkInput(source), directory, partMegabytes, encoder, progress, token);
+        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic) =>
+        RecordAsync(NetworkInput(source), directory, partMegabytes, encoder, progress, token, deinterlace);
 
     public Task CreateLivePreviewAsync(Uri source, string directory, CancellationToken token) =>
         FfmpegProcess.RunAsync(ffmpeg,
             [.. NetworkInput(source), .. MapStreams(),
-                "-vf", "scale=-2:trunc(min(ih\\,720)/2)*2", "-pix_fmt", "yuv420p",
+                "-vf", VideoFilters("scale=-2:trunc(min(ih\\,720)/2)*2", DeinterlaceMode.Automatic), "-pix_fmt", "yuv420p",
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
                 "-r", "30", "-g", "60", "-sc_threshold", "0",
                 "-c:a", "aac", "-b:a", "128k",
@@ -62,23 +63,23 @@ public sealed class MediaService(string ffmpeg)
             null, token);
 
     public Task<RecordingResult> RecordSdpAsync(string path, string directory, int partMegabytes, VideoEncoder encoder,
-        IProgress<MediaProgress>? progress, CancellationToken token)
+        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic)
     {
         if (!Path.GetExtension(path).Equals(".sdp", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
             throw new ArgumentException("请选择有效的本地 SDP 文件。");
         return RecordAsync(["-protocol_whitelist", "file,udp,rtp", "-f", "sdp", "-i", Path.GetFullPath(path)],
-            directory, partMegabytes, encoder, progress, token);
+            directory, partMegabytes, encoder, progress, token, deinterlace);
     }
 
     public Task<string> MergeAsync(string recordingDirectory, string directory, VideoEncoder encoder, bool copy,
-        IProgress<MediaProgress>? progress, CancellationToken token)
+        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic)
     {
         string[] parts = RecordingParts.Find(recordingDirectory);
         if (parts.Length == 0)
             throw new InvalidOperationException("所选文件夹没有可用的 Live Recorder 录制分片。");
         string output = NewOutput(directory, "merged", ".mp4");
         return WriteMediaAsync(output, ["-nostdin", "-f", "mpegts", "-i", "pipe:0"],
-            copy ? ["-c", "copy", "-bsf:a", "aac_adtstoasc"] : Encode(encoder), "mp4", progress, token,
+            copy ? ["-c", "copy", "-bsf:a", "aac_adtstoasc"] : Encode(encoder, deinterlace), "mp4", progress, token,
             async (pipe, ct) =>
             {
                 foreach (string part in parts)
@@ -90,17 +91,17 @@ public sealed class MediaService(string ffmpeg)
     }
 
     public Task<string> TranscodeAsync(string source, string directory, VideoEncoder encoder,
-        IProgress<MediaProgress>? progress, CancellationToken token)
+        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic)
     {
         if (!File.Exists(source))
             throw new FileNotFoundException("找不到需要转码的视频文件。", source);
         return WriteMediaAsync(NewOutput(directory, "transcoded", ".mp4"),
             ["-protocol_whitelist", "file", "-i", Path.GetFullPath(source)],
-            Encode(encoder), "mp4", progress, token);
+            Encode(encoder, deinterlace), "mp4", progress, token);
     }
 
     private async Task<RecordingResult> RecordAsync(string[] input, string directory, int partMegabytes,
-        VideoEncoder encoder, IProgress<MediaProgress>? progress, CancellationToken token)
+        VideoEncoder encoder, IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(partMegabytes, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(partMegabytes, 1024);
@@ -111,7 +112,7 @@ public sealed class MediaService(string ffmpeg)
         try
         {
             await FfmpegProcess.RunAsync(ffmpeg,
-                [.. input, .. MapStreams(), .. Encode(encoder), "-f", "mpegts", "pipe:1"],
+                [.. input, .. MapStreams(), .. Encode(encoder, deinterlace), "-f", "mpegts", "pipe:1"],
                 progress, token,
                 readOutput: stream => RecordingParts.SplitAsync(stream, recordingDirectory, partMegabytes * 1_000_000L, progress),
                 finishOnCancellation: true).ConfigureAwait(false);
@@ -243,7 +244,7 @@ public sealed class MediaService(string ffmpeg)
 
     private static string[] MapStreams() => ["-map", "0:V:0?", "-map", "0:a:0?", "-sn", "-dn"];
 
-    private static string[] Encode(VideoEncoder encoder)
+    private static string[] Encode(VideoEncoder encoder, DeinterlaceMode deinterlace)
     {
         string codec = encoder switch
         {
@@ -254,9 +255,17 @@ public sealed class MediaService(string ffmpeg)
             _ => throw new ArgumentOutOfRangeException(nameof(encoder))
         };
         string pixelFormat = encoder == VideoEncoder.Intel ? "nv12" : "yuv420p";
-        return ["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-pix_fmt", pixelFormat,
+        return ["-vf", VideoFilters("scale=trunc(iw/2)*2:trunc(ih/2)*2", deinterlace), "-pix_fmt", pixelFormat,
             "-c:v", codec, "-c:a", "aac", "-b:a", "160k"];
     }
+
+    private static string VideoFilters(string scale, DeinterlaceMode deinterlace) => deinterlace switch
+    {
+        DeinterlaceMode.Automatic => $"bwdif=mode=send_frame:parity=auto:deint=interlaced,{scale}",
+        DeinterlaceMode.Always => $"bwdif=mode=send_frame:parity=auto:deint=all,{scale}",
+        DeinterlaceMode.Off => scale,
+        _ => throw new ArgumentOutOfRangeException(nameof(deinterlace))
+    };
 
     private static string NewOutput(string directory, string name, string extension) =>
         Path.Combine(Path.GetFullPath(directory), $"{name}_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{extension}");
