@@ -18,6 +18,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>../../icon/icon.ico</ApplicationIcon>
     <BundledFFmpegDirectory>$(MSBuildProjectDirectory)/../../.tools/ffmpeg-9.0.2</BundledFFmpegDirectory>
+    <BundledYtDlpDirectory>$(MSBuildProjectDirectory)/../../.tools/yt-dlp-2026.10.26</BundledYtDlpDirectory>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
@@ -26,9 +27,15 @@
     <None Include="../../icon/icon.ico" Link="Assets/icon.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Include="$(BundledFFmpegDirectory)/ffmpeg.exe;$(BundledFFmpegDirectory)/LICENSE;$(BundledFFmpegDirectory)/README.txt"
           Link="ffmpeg/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(BundledYtDlpDirectory)/yt-dlp.exe;$(BundledYtDlpDirectory)/deno.exe;$(BundledYtDlpDirectory)/LICENSE-yt-dlp.txt;$(BundledYtDlpDirectory)/LICENSE-deno.txt"
+          Link="yt-dlp/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <Target Name="PrepareBundledFFmpeg" BeforeTargets="PrepareForBuild"
           Condition="'$(DesignTimeBuild)' != 'true' and (!Exists('$(BundledFFmpegDirectory)/ffmpeg.exe') or !Exists('$(BundledFFmpegDirectory)/LICENSE') or !Exists('$(BundledFFmpegDirectory)/README.txt'))">
     <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)/../../build/Get-FFmpeg.ps1&quot; -Destination &quot;$(BundledFFmpegDirectory)&quot;" />
+  </Target>
+  <Target Name="PrepareBundledYtDlp" BeforeTargets="PrepareForBuild"
+          Condition="'$(DesignTimeBuild)' != 'true' and (!Exists('$(BundledYtDlpDirectory)/yt-dlp.exe') or !Exists('$(BundledYtDlpDirectory)/deno.exe') or !Exists('$(BundledYtDlpDirectory)/LICENSE-yt-dlp.txt') or !Exists('$(BundledYtDlpDirectory)/LICENSE-deno.txt'))">
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)/../../build/Get-YtDlp.ps1&quot; -Destination &quot;$(BundledYtDlpDirectory)&quot;" />
   </Target>
 </Project>

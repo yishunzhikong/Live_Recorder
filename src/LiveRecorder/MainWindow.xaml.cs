@@ -27,6 +27,7 @@ public sealed partial class MainWindow : Window
             videos = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         OutputBox.Text = Path.Combine(videos, "Live Recorder");
         StatusDetail.Text = "粘贴媒体链接，或选择要处理的本地文件。";
+        ModeBox.SelectionChanged += Mode_SelectionChanged;
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
         WindowAspect.Apply(AppWindow, _handle);
@@ -274,9 +275,11 @@ public sealed partial class MainWindow : Window
 
     private void SetControlsEnabled(bool enabled)
     {
-        foreach (Control control in new Control[] { SourceBox, PreviewLinkButton, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
+        foreach (Control control in new Control[] { ModeBox, WebSourceBox, AnalyzeWebButton,
+            SourceBox, PreviewLinkButton, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
             EncoderBox, DeinterlaceBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
             control.IsEnabled = enabled;
+        UpdateWebActions(enabled);
     }
 
     private void SetStatus(string title, string detail)

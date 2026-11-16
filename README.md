@@ -12,6 +12,8 @@ Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视�
 
 右侧的预览区占纵向的四分之三。播放器的单行控制栏从左到右显示操作按钮、进度条和当前时间及总时长。下方工具栏提供预览、本地播放、下载和录制；SDP 录制、合并、转码和打开文件夹可从「更多操作」菜单进入。
 
+左侧「模式」默认选择「直播录制」。切换到「yt-dlp」后，粘贴包含视频的网页地址，点击「分析链接」，再选择媒体格式并复制直链。部分网站会分别提供视频和音频，选项中会标明。直链可能过期，也可能需要原网站的请求头。「CCTV」为预留入口。
+
 本地文件与 HTTP(S) 链接的播放格式取决于 Windows 的媒体解码支持。RTSP、RTMP、RTP、UDP 和 SRT 由内置 FFmpeg 转换为可预览的流，通常有数秒缓冲延迟。录制占用同一 RTP 或 UDP 端口时，应用会先释放预览连接。
 
 默认保存到 Windows「视频」中的 `Live Recorder` 文件夹。每次录制使用一个独立的文件夹，默认分片上限为 1 MB（1,000,000 字节）。分片在 MPEG-TS 的 188 字节包边界切开，最后一片可以更小。分片面向顺序合并，单片可能需要前一片的关键帧才能连贯播放。
@@ -31,6 +33,8 @@ dotnet build src/LiveRecorder/LiveRecorder.csproj -c Release
 dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-win-x64
 ```
 
-首次构建时会自动下载并校验固定版本的 FFmpeg。发布目录包含 FFmpeg、.NET 和 Windows App SDK 运行时。目标机器还需 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。
+首次构建时会自动下载并校验固定版本的 FFmpeg、yt-dlp 和 Deno。发布目录包含这些依赖以及 .NET 和 Windows App SDK 运行时。目标机器还需 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。
 
 随包分发的 FFmpeg 是 [Gyan FFmpeg 9.0.2 Essentials](https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2) 的 Windows x64 构建，按 GPL v3 授权。发布包的 `ffmpeg` 子目录附带许可证和原始构建说明。对应源码见 [FFmpeg 9.0.2 源码版本](https://github.com/FFmpeg/FFmpeg/tree/946fcce07b)，协议细节见 [FFmpeg 协议文档](https://ffmpeg.org/ffmpeg-protocols.html)。
+
+网页分析使用 [yt-dlp 2026.10.26](https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.26) 的官方 Windows 可执行文件，以及供其运行网页解析脚本的 [Deno 2.9.8](https://github.com/denoland/deno/releases/tag/v2.9.8)。发布包的 `yt-dlp` 子目录附带源码项目的许可证。yt-dlp 官方打包的可执行文件按 GPL v3 或更高版本授权，GPL v3 全文见 `ffmpeg/LICENSE`。
