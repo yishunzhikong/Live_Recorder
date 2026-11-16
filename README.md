@@ -1,10 +1,10 @@
 # Live Recorder
 
-Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视频下载和录制工具。`NOCCTV` 版本提供「直播录制」和「yt-dlp」两种模式，支持 Windows 10 2004（19041）及以上版本和 Windows 11 的 x64 系统。
+Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视频下载和录制工具。v1.0.0 提供「直播录制」和「yt-dlp」两种模式，支持 Windows 10 2004（19041）及以上版本和 Windows 11 的 x64 系统。
 
 ## 运行发布版
 
-完整解压 `LiveRecorder-NOCCTV-win-x64.zip`，打开解压后的 `LiveRecorder-NOCCTV-win-x64` 文件夹并双击 `LiveRecorder.exe`。程序会自动使用随包附带的 FFmpeg、yt-dlp 和 Deno。
+完整解压 `LiveRecorder-v1.0.0-win-x64.zip`，打开解压后的 `LiveRecorder-v1.0.0-win-x64` 文件夹并双击 `LiveRecorder.exe`。程序会自动使用随包附带的 FFmpeg、yt-dlp 和 Deno。
 
 ## 直播录制
 
@@ -35,13 +35,13 @@ Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视�
 
 ## 从源码构建
 
-安装 .NET 10 SDK 后，从 `NOCCTV` 分支的仓库根目录运行以下命令。[下载 .NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+安装 .NET 10 SDK 后，在仓库根目录运行以下命令。[下载 .NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 
 ```powershell
 dotnet build src/LiveRecorder/LiveRecorder.csproj -c Release
-dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-NOCCTV-win-x64
-Copy-Item -LiteralPath README.md -Destination artifacts/LiveRecorder-NOCCTV-win-x64/
-tar.exe -a -cf artifacts/LiveRecorder-NOCCTV-win-x64.zip --exclude='*.pdb' -C artifacts LiveRecorder-NOCCTV-win-x64
+dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-v1.0.0-win-x64
+Copy-Item -LiteralPath README.md -Destination artifacts/LiveRecorder-v1.0.0-win-x64/
+tar.exe -a -cf artifacts/LiveRecorder-v1.0.0-win-x64.zip --exclude='*.pdb' -C artifacts LiveRecorder-v1.0.0-win-x64
 ```
 
 首次构建时会自动下载并校验固定版本的 FFmpeg、yt-dlp 和 Deno。发布目录包含这些依赖以及 .NET 和 Windows App SDK 运行时。目标机器还需 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。
