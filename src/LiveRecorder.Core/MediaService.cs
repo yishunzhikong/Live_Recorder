@@ -30,18 +30,20 @@ public sealed class MediaService(string ffmpeg)
         return uri;
     }
 
-    public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress, CancellationToken token)
+    public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress,
+        CancellationToken token, string? outputTitle = null)
     {
         Directory.CreateDirectory(directory);
         bool httpSource = source.Scheme is "http" or "https";
         if (httpSource && !IsPlaylistPath(source.AbsolutePath))
         {
-            string? directFile = await TryDownloadHttpAsync(source, directory, progress, token).ConfigureAwait(false);
+            string? directFile = await TryDownloadHttpAsync(source, directory, progress, token, outputTitle).ConfigureAwait(false);
             if (directFile is not null)
                 return directFile;
         }
 
-        string output = NewOutput(directory, "download", ".mkv");
+        string output = outputTitle is null ? NewOutput(directory, "download", ".mkv")
+            : Path.Combine(Path.GetFullPath(directory), EpisodeFileName(outputTitle) + ".mkv");
         return await WriteMediaAsync(output, NetworkInput(source, hls: httpSource), ["-c", "copy"], "matroska", progress, token)
             .ConfigureAwait(false);
     }
@@ -158,7 +160,7 @@ public sealed class MediaService(string ffmpeg)
     }
 
     private static async Task<string?> TryDownloadHttpAsync(Uri source, string directory,
-        IProgress<MediaProgress>? progress, CancellationToken token)
+        IProgress<MediaProgress>? progress, CancellationToken token, string? outputTitle)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
@@ -225,6 +227,8 @@ public sealed class MediaService(string ffmpeg)
                 throw new IOException("下载字节数与服务器声明的大小不一致。");
             progress?.Report(new MediaProgress(Bytes: received, TotalBytes: expected));
             token.ThrowIfCancellationRequested();
+            if (outputTitle is not null)
+                return MoveToAvailableName(partial, Path.GetFullPath(directory), EpisodeFileName(outputTitle), safeExtension, File.Move);
             File.Move(partial, output);
             return output;
         }
@@ -244,6 +248,14 @@ public sealed class MediaService(string ffmpeg)
     }
 
     private static bool IsPlaylistPath(string path) => Path.GetExtension(path).ToLowerInvariant() is ".m3u8" or ".m3u";
+
+    private static string EpisodeFileName(string title)
+    {
+        char[] invalid = Path.GetInvalidFileNameChars();
+        string name = string.Concat(title.Take(100).Select(character => invalid.Contains(character) ? '_' : character))
+            .Trim(' ', '.');
+        return name.Length == 0 ? "CCTV 节目" : "CCTV - " + name;
+    }
 
     private static string[] MapStreams() => ["-map", "0:V:0?", "-map", "0:a:0?", "-sn", "-dn"];
 

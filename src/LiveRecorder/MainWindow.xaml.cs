@@ -18,9 +18,9 @@ public sealed partial class MainWindow : Window
     private bool _closeWhenIdle;
     private bool _closingAfterCleanup;
 
-    public MainWindow() : this(null) { }
+    public MainWindow() : this(new CctvLinkResolver()) { }
 
-    internal MainWindow(ICctvLinkResolver? cctvResolver)
+    internal MainWindow(ICctvLinkResolver cctvResolver)
     {
         _cctvResolver = cctvResolver;
         InitializeComponent();
@@ -30,11 +30,6 @@ public sealed partial class MainWindow : Window
             videos = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         OutputBox.Text = Path.Combine(videos, "Live Recorder");
         StatusDetail.Text = "粘贴媒体链接，或选择要处理的本地文件。";
-        if (cctvResolver is not null)
-        {
-            CctvHint.Visibility = Visibility.Collapsed;
-            CctvSourceBox.Visibility = AnalyzeCctvButton.Visibility = Visibility.Visible;
-        }
         ModeBox.SelectionChanged += Mode_SelectionChanged;
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
@@ -44,6 +39,11 @@ public sealed partial class MainWindow : Window
 
     private async void Download_Click(object sender, RoutedEventArgs e) => await RunAsync("下载中", async token =>
     {
+        if (_mode == AppMode.Cctv)
+        {
+            await DownloadCctvAsync(token);
+            return;
+        }
         Uri source = SelectedMediaSource();
         string output = await _media.DownloadAsync(source, OutputDirectory(), CreateProgress(), token);
         ShowOutput("下载完成", output);
@@ -51,7 +51,9 @@ public sealed partial class MainWindow : Window
 
     private async void Record_Click(object sender, RoutedEventArgs e) => await RunAsync("录制中", async token =>
     {
-        Uri source = SelectedMediaSource();
+        Uri source = _mode == AppMode.Cctv
+            ? await _cctvResolver.ResolveAsync(SelectedCctvEpisodes()[0], SelectedCctvHeight(), token)
+            : SelectedMediaSource();
         string directory = OutputDirectory();
         VideoEncoder encoder = SelectedEncoder();
         if (source.Scheme is "rtp" or "udp")
@@ -283,7 +285,8 @@ public sealed partial class MainWindow : Window
 
     private void SetControlsEnabled(bool enabled)
     {
-        foreach (Control control in new Control[] { ModeBox, WebSourceBox, AnalyzeWebButton, CctvSourceBox, AnalyzeCctvButton,
+        foreach (Control control in new Control[] { ModeBox, WebSourceBox, AnalyzeWebButton,
+            CctvSourceBox, CctvIncludeAlbumBox, AnalyzeCctvButton, CctvQualityBox, CctvEpisodeList, SelectAllCctvButton, ClearCctvButton,
             SourceBox, PreviewLinkButton, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
             EncoderBox, DeinterlaceBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
             control.IsEnabled = enabled;

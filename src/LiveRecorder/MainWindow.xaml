@@ -44,11 +44,37 @@
                                  Height="60" PlaceholderText="所选格式的地址将在这里显示" />
                     </StackPanel>
                     <StackPanel x:Name="CctvSettings" Spacing="10" Visibility="Collapsed">
-                        <TextBlock x:Name="CctvHint" Text="CCTV 解析暂未接入。" TextWrapping="Wrap"
-                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                        <TextBox x:Name="CctvSourceBox" Header="CCTV 网页链接" InputScope="Url" Visibility="Collapsed"
+                        <TextBox x:Name="CctvSourceBox" Header="CCTV 链接" InputScope="Url" PlaceholderText="粘贴节目页或专辑页地址"
                                  TextChanged="CctvSource_TextChanged" />
-                        <Button x:Name="AnalyzeCctvButton" Content="解析 CCTV 链接" Click="AnalyzeCctv_Click" Visibility="Collapsed" />
+                        <CheckBox x:Name="CctvIncludeAlbumBox" Content="从节目页查找所属专辑" />
+                        <Button x:Name="AnalyzeCctvButton" Content="解析链接" Click="AnalyzeCctv_Click" />
+                        <ComboBox x:Name="CctvQualityBox" Header="分辨率" HorizontalAlignment="Stretch" SelectedIndex="0">
+                            <ComboBoxItem Content="自动（最高可用）" />
+                            <ComboBoxItem Content="4K · 2160p" Tag="2160" />
+                            <ComboBoxItem Content="1440p" Tag="1440" />
+                            <ComboBoxItem Content="超清 · 1080p" Tag="1080" />
+                            <ComboBoxItem Content="高清 · 720p" Tag="720" />
+                            <ComboBoxItem Content="576p" Tag="576" />
+                            <ComboBoxItem Content="标清 · 540p" Tag="540" />
+                            <ComboBoxItem Content="480p" Tag="480" />
+                            <ComboBoxItem Content="360p" Tag="360" />
+                            <ComboBoxItem Content="流畅 · 270p" Tag="270" />
+                        </ComboBox>
+                        <StackPanel x:Name="CctvEpisodePanel" Spacing="6" Visibility="Collapsed">
+                            <TextBlock Text="剧集" />
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button x:Name="SelectAllCctvButton" Content="全选" Click="SelectAllCctv_Click" />
+                                <Button x:Name="ClearCctvButton" Content="清空选择" Click="ClearCctv_Click" />
+                            </StackPanel>
+                            <ListView x:Name="CctvEpisodeList" MaxHeight="202" SelectionMode="Multiple"
+                                      AutomationProperties.Name="CCTV 剧集">
+                                <ListView.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Title}" TextWrapping="Wrap" Margin="0,4" />
+                                    </DataTemplate>
+                                </ListView.ItemTemplate>
+                            </ListView>
+                        </StackPanel>
                     </StackPanel>
                     <StackPanel Spacing="16">
                         <Grid ColumnSpacing="8">
