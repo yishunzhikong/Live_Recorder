@@ -20,6 +20,7 @@
     <BundledFFmpegDirectory>$(MSBuildProjectDirectory)/../../.tools/ffmpeg-9.0.2</BundledFFmpegDirectory>
   </PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
     <ProjectReference Include="../LiveRecorder.Core/LiveRecorder.Core.csproj" />
     <None Include="../../icon/icon.ico" Link="Assets/icon.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

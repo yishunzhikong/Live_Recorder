@@ -1,10 +1,8 @@
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using LiveRecorder.Core;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Windows.Graphics;
 using Windows.Storage.Pickers;
 
 namespace LiveRecorder;
@@ -18,6 +16,7 @@ public sealed partial class MainWindow : Window
     private string? _lastResultFolder;
     private int _progressVersion;
     private bool _closeWhenIdle;
+    private bool _closingAfterCleanup;
 
     public MainWindow()
     {
@@ -29,17 +28,10 @@ public sealed partial class MainWindow : Window
         OutputBox.Text = Path.Combine(videos, "Live Recorder");
         StatusDetail.Text = "粘贴媒体链接，或选择要处理的本地文件。";
 
-        double scale = Math.Max(96u, GetDpiForWindow(_handle)) / 96.0;
-        RectInt32 workArea = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
-        AppWindow.Resize(new SizeInt32(
-            Math.Min((int)(880 * scale), workArea.Width),
-            Math.Min((int)(940 * scale), workArea.Height)));
+        WindowAspect.Apply(AppWindow, _handle);
         AppWindow.Closing += Window_Closing;
     }
-
-    [DllImport("user32.dll")]
-    private static extern uint GetDpiForWindow(nint hwnd);
 
     private async void Download_Click(object sender, RoutedEventArgs e) => await RunAsync("下载中", async token =>
     {
@@ -53,6 +45,8 @@ public sealed partial class MainWindow : Window
         Uri source = MediaService.ParseSource(SourceBox.Text);
         string directory = OutputDirectory();
         VideoEncoder encoder = SelectedEncoder();
+        if (source.Scheme is "rtp" or "udp")
+            await ReleaseDatagramPreviewAsync(source);
         RecordingResult recording = await _media.RecordAsync(source, directory, PartSize(), encoder, CreateProgress(), token);
         await FinishRecordingAsync(recording, directory, encoder);
     });
@@ -66,6 +60,7 @@ public sealed partial class MainWindow : Window
         {
             string directory = OutputDirectory();
             VideoEncoder encoder = SelectedEncoder();
+            await ReleaseDatagramPreviewAsync();
             RecordingResult recording = await _media.RecordSdpAsync(file, directory, PartSize(), encoder, CreateProgress(), token);
             await FinishRecordingAsync(recording, directory, encoder);
         });
@@ -190,8 +185,7 @@ public sealed partial class MainWindow : Window
             TaskProgress.Visibility = Visibility.Collapsed;
             StopButton.IsEnabled = false;
             SetControlsEnabled(true);
-            if (_closeWhenIdle)
-                Close();
+            CloseWhenReady();
         }
     }
 
@@ -241,14 +235,26 @@ public sealed partial class MainWindow : Window
         _operation.Cancel();
     }
 
-    private void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
+    private async void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        if (_operation is null)
+        if (_operation is null && _preview is null && _previewCleanup.IsCompleted)
             return;
         args.Cancel = true;
+        if (_closeWhenIdle)
+            return;
         _closeWhenIdle = true;
         _mergePrompt?.Hide();
         RequestStop();
+        await StopPreviewAsync();
+        CloseWhenReady();
+    }
+
+    private void CloseWhenReady()
+    {
+        if (!_closeWhenIdle || _closingAfterCleanup || _operation is not null || !_previewCleanup.IsCompleted)
+            return;
+        _closingAfterCleanup = true;
+        Close();
     }
 
     private void OpenOutput_Click(object sender, RoutedEventArgs e)
@@ -264,7 +270,7 @@ public sealed partial class MainWindow : Window
 
     private void SetControlsEnabled(bool enabled)
     {
-        foreach (Control control in new Control[] { SourceBox, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
+        foreach (Control control in new Control[] { SourceBox, PreviewLinkButton, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
             EncoderBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
             control.IsEnabled = enabled;
     }
@@ -278,6 +284,8 @@ public sealed partial class MainWindow : Window
     private void ShowOutput(string title, string file)
     {
         _lastResultFolder = Path.GetDirectoryName(file);
+        _lastResultFile = file;
+        PlayResultButton.IsEnabled = true;
         SetStatus(title, file);
     }
 

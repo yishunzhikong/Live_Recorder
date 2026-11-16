@@ -48,6 +48,19 @@ public sealed class MediaService(string ffmpeg)
         IProgress<MediaProgress>? progress, CancellationToken token) =>
         RecordAsync(NetworkInput(source), directory, partMegabytes, encoder, progress, token);
 
+    public Task CreateLivePreviewAsync(Uri source, string directory, CancellationToken token) =>
+        FfmpegProcess.RunAsync(ffmpeg,
+            [.. NetworkInput(source), .. MapStreams(),
+                "-vf", "scale=-2:trunc(min(ih\\,720)/2)*2", "-pix_fmt", "yuv420p",
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                "-r", "30", "-g", "60", "-sc_threshold", "0",
+                "-c:a", "aac", "-b:a", "128k",
+                "-f", "hls", "-hls_time", "2", "-hls_list_size", "6",
+                "-hls_flags", "delete_segments+independent_segments+temp_file",
+                "-hls_segment_filename", Path.Combine(directory, "segment-%08d.ts"),
+                Path.Combine(directory, "stream.m3u8")],
+            null, token);
+
     public Task<RecordingResult> RecordSdpAsync(string path, string directory, int partMegabytes, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token)
     {
