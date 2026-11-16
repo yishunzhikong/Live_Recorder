@@ -1,5 +1,8 @@
 /Request.md
 /reference/
+/tools/
+/.dsh-acl-recovery/
+/.tmp-port/
 **/bin/
 **/obj/
 /.tools/
