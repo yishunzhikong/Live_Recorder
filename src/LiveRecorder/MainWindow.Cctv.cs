@@ -35,8 +35,14 @@ public sealed partial class MainWindow
 
     private void ClearCctv_Click(object sender, RoutedEventArgs e) => CctvEpisodeList.SelectedItems.Clear();
 
-    private int? SelectedCctvHeight() =>
-        CctvQualityBox.SelectedItem is ComboBoxItem { Tag: string tag } && int.TryParse(tag, out int height) ? height : null;
+    private CctvQuality SelectedCctvQuality() => (CctvQuality?)CctvQualityBox.SelectedItem ?? CctvQuality.All[0];
+
+    private static string CctvSourceDetail(CctvMediaLink link)
+    {
+        if (link.Quality is not { } quality)
+            return "HLS 直链";
+        return $"实际使用 {quality.Label} · 央视清单 {string.Join("、", link.ListedQualities.Select(level => level.Label))}";
+    }
 
     private CctvEpisode[] SelectedCctvEpisodes()
     {
@@ -49,9 +55,10 @@ public sealed partial class MainWindow
     private async Task DownloadCctvAsync(CancellationToken token)
     {
         CctvEpisode[] episodes = SelectedCctvEpisodes();
-        int? height = SelectedCctvHeight();
+        CctvQuality quality = SelectedCctvQuality();
         string directory = OutputDirectory();
         int completed = 0;
+        int downgraded = 0;
         var failures = new List<string>();
         for (int index = 0; index < episodes.Length; index++)
         {
@@ -62,9 +69,14 @@ public sealed partial class MainWindow
             try
             {
                 token.ThrowIfCancellationRequested();
-                Uri source = await _cctvResolver.ResolveAsync(episode, height, token);
-                string output = await _media.DownloadAsync(source, directory, CreateProgress(), token, episode.Title);
+                CctvMediaLink source = await _cctvResolver.ResolveAsync(episode, quality, token);
+                SetStatus($"{stage} · {source.Quality?.Label ?? "HLS"}", episode.Title);
+                string output = await _media.DownloadAsync(source.Url, directory, CreateProgress(), token, episode.Title);
                 ShowOutput("下载完成", output);
+                if (source.Quality is { } actual && actual.Code < quality.Code)
+                    downgraded++;
+                if (episodes.Length == 1)
+                    SetStatus($"下载完成 · {CctvSourceDetail(source)}", output);
                 completed++;
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -80,9 +92,10 @@ public sealed partial class MainWindow
             finally { ++_progressVersion; }
         }
 
+        string fallback = downgraded > 0 ? $" · {downgraded} 集使用较低档位" : "";
         if (failures.Count > 0)
-            SetStatus($"已保存 {completed} 集，失败 {failures.Count} 集", string.Join("\n", failures.Take(2)));
+            SetStatus($"已保存 {completed} 集，失败 {failures.Count} 集{fallback}", string.Join("\n", failures.Take(2)));
         else if (episodes.Length > 1)
-            SetStatus($"已下载 {completed} 集", directory);
+            SetStatus($"已下载 {completed} 集{fallback}", directory);
     }
 }

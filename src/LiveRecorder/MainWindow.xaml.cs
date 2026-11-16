@@ -24,6 +24,8 @@ public sealed partial class MainWindow : Window
     {
         _cctvResolver = cctvResolver;
         InitializeComponent();
+        CctvQualityBox.ItemsSource = CctvQuality.All;
+        CctvQualityBox.SelectedIndex = 0;
         _handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
         string videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
         if (string.IsNullOrWhiteSpace(videos))
@@ -52,7 +54,7 @@ public sealed partial class MainWindow : Window
     private async void Record_Click(object sender, RoutedEventArgs e) => await RunAsync("录制中", async token =>
     {
         Uri source = _mode == AppMode.Cctv
-            ? await _cctvResolver.ResolveAsync(SelectedCctvEpisodes()[0], SelectedCctvHeight(), token)
+            ? (await _cctvResolver.ResolveAsync(SelectedCctvEpisodes()[0], SelectedCctvQuality(), token)).Url
             : SelectedMediaSource();
         string directory = OutputDirectory();
         VideoEncoder encoder = SelectedEncoder();

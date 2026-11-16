@@ -65,11 +65,16 @@ public sealed partial class MainWindow
             return;
         }
 
-        int? height = SelectedCctvHeight();
+        CctvQuality quality = SelectedCctvQuality();
         await OpenPreviewAsync(episode.Title, null, async session =>
         {
-            Uri source = await _cctvResolver.ResolveAsync(episode, height, session.Cancellation.Token);
-            return MediaSource.CreateFromUri(source);
+            CctvMediaLink source = await _cctvResolver.ResolveAsync(episode, quality, session.Cancellation.Token);
+            if (_preview == session)
+            {
+                PreviewName.Text = $"{episode.Title} · {source.Quality?.Label ?? "HLS"}";
+                SetStatus("CCTV 链接已解析", CctvSourceDetail(source));
+            }
+            return MediaSource.CreateFromUri(source.Url);
         });
     }
 

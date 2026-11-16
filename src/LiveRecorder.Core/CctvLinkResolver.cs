@@ -1,11 +1,10 @@
-using System.Globalization;
 using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
 namespace LiveRecorder.Core;
 
-public sealed class CctvLinkResolver : ICctvLinkResolver
+public sealed class CctvLinkResolver(HttpClient? http = null) : ICctvLinkResolver
 {
     private const int PageSize = 100;
     private static readonly Uri Site = new("https://tv.cctv.com/");
@@ -15,13 +14,14 @@ public sealed class CctvLinkResolver : ICctvLinkResolver
     private static readonly Regex EpisodeCode = Pattern(@"VIDE[A-Za-z0-9]+");
     private static readonly Regex VideoId = Pattern(@"^[0-9a-f]{32}$");
     private static readonly Regex PageVideoId = Pattern("""\b(?:guid|guid_0|videoCenterId|data-guid|data-pid)\s*["']?\s*[:=]\s*["']([0-9a-f]{32})["']""");
+    private static readonly Regex EmbeddedVideoId = Pattern("""(?:\\u002fvideo\\u002f"?|\[!--begin:htmlVideoCode--\])([0-9a-f]{32})(?=["',])""");
+    private static readonly Regex PlaylistVideoId = Pattern(@"/asp/(?:[^/]+/)?hls/[^/]+/[^/]+/[^/]+/default/([0-9a-f]{32})/[^/]+\.m3u8$");
     private static readonly Regex PageTitle = Pattern(@"<title\b[^>]*>(.*?)</title>", RegexOptions.Singleline);
     private static readonly Regex PageAlbumCodes = Pattern("""\bvideotvCodes\s*=\s*["']([^"']+)["']""");
     private static readonly Regex EpisodeAnchor = Pattern("""<a\b(?<attributes>[^>]*)>(?<text>[^<]*)</a\s*>""");
     private static readonly Regex Href = Pattern("""\bhref\s*=\s*["']([^"']+)["']""");
     private static readonly Regex AnchorTitle = Pattern("""\btitle\s*=\s*["']([^"']+)["']""");
-    private static readonly Regex Resolution = Pattern(@"(?:[:,])\s*RESOLUTION=\d+x(\d+)");
-    private static readonly Regex Bandwidth = Pattern(@"(?:[:,])\s*BANDWIDTH=(\d+)");
+    private static readonly Regex VariantCode = Pattern(@"/hls/(\d+)/");
 
     public async Task<IReadOnlyList<CctvEpisode>> GetEpisodesAsync(Uri page, bool includeAlbum, CancellationToken token)
     {
@@ -41,7 +41,7 @@ public sealed class CctvLinkResolver : ICctvLinkResolver
         if (album.Length > 0)
             return await GetAlbumAsync(album, finalPage, token, html).ConfigureAwait(false);
 
-        string guid = Group(PageVideoId, html);
+        string guid = ExtractVideoId(html);
         if (guid.Length == 0)
             throw new InvalidDataException("页面里没有找到 CCTV 视频编号。请使用具体节目页或专辑页。");
         string title = Decode(Group(PageTitle, html));
@@ -64,61 +64,65 @@ public sealed class CctvLinkResolver : ICctvLinkResolver
         return album.Length == 0 ? [current] : await GetAlbumAsync(album, finalPage, token, current: current).ConfigureAwait(false);
     }
 
-    public async Task<Uri> ResolveAsync(CctvEpisode episode, int? height, CancellationToken token)
+    public async Task<CctvMediaLink> ResolveAsync(CctvEpisode episode, CctvQuality quality, CancellationToken token)
     {
-        Uri playlist;
-        if (IsPlaylist(episode.Page))
+        Uri? direct = IsPlaylist(episode.Page) ? episode.Page : null;
+        string guid = direct is null ? episode.VideoId ?? "" : Group(PlaylistVideoId, direct.AbsolutePath);
+        if (direct is not null && guid.Length == 0)
         {
-            playlist = episode.Page;
+            (string text, Uri address) = await GetTextAsync(direct, Site, token).ConfigureAwait(false);
+            if (!IsHls(text))
+                throw new InvalidDataException("服务器未返回有效的 HLS 播放列表。");
+            return new CctvMediaLink(address, null, []);
         }
-        else
+        if (!VideoId.IsMatch(guid))
         {
-            string guid = episode.VideoId ?? "";
-            if (!VideoId.IsMatch(guid))
-            {
-                if (!IsCctvPage(episode.Page))
-                    throw new ArgumentException("无效的 CCTV 节目链接。");
-                (string html, _) = await GetTextAsync(episode.Page, Site, token).ConfigureAwait(false);
-                guid = Group(PageVideoId, html);
-            }
-            if (!VideoId.IsMatch(guid))
-                throw new InvalidDataException("未找到这集节目的 CCTV 视频编号。");
-
-            var endpoint = new Uri($"https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={guid}");
-            using JsonDocument info = await GetJsonAsync(endpoint, Site, token).ConfigureAwait(false);
-            JsonElement video = info.RootElement;
-            if (Value(video, "is_invalid_copyright") == "1" || Value(video, "is_protected") == "1" || Value(video, "is_preview") == "1")
-                throw new InvalidDataException("央视公开接口没有提供这集节目的完整播放权限。");
-            if (!TryHttpUri(Site, Value(video, "hls_url"), out Uri? publicPlaylist))
-                throw new InvalidDataException("央视接口未返回可用的公开 HLS 播放链接。");
-            playlist = publicPlaylist!;
+            if (!IsCctvPage(episode.Page))
+                throw new ArgumentException("无效的 CCTV 节目链接。");
+            (string html, _) = await GetTextAsync(episode.Page, Site, token).ConfigureAwait(false);
+            guid = ExtractVideoId(html);
         }
+        if (!VideoId.IsMatch(guid))
+            throw new InvalidDataException("未找到这集节目的 CCTV 视频编号。");
 
-        (string master, Uri finalPlaylist) = await GetTextAsync(playlist, Site, token).ConfigureAwait(false);
-        if (!master.TrimStart('\uFEFF').StartsWith("#EXTM3U", StringComparison.Ordinal))
-            throw new InvalidDataException("服务器未返回有效的 HLS 播放列表。");
-        var variants = ReadVariants(master, finalPlaylist);
-        if (variants.Count == 0)
+        var endpoint = new Uri($"https://vdn.apps.cntv.cn/api/getHttpVideoInfo.do?pid={guid}");
+        using JsonDocument info = await GetJsonAsync(endpoint, Site, token).ConfigureAwait(false);
+        JsonElement video = info.RootElement;
+        if (Value(video, "is_invalid_copyright") == "1" || Value(video, "is_protected") == "1" || Value(video, "is_preview") == "1")
+            throw new InvalidDataException("央视接口没有提供这集节目的完整公开播放权限。");
+
+        string referenceUrl = Value(Property(video, "manifest"), "hls_enc2_url");
+        var indexes = await Task.WhenAll(ReadPlaylistAsync(referenceUrl, token),
+            ReadPlaylistAsync(Value(video, "hls_url"), token)).ConfigureAwait(false);
+        Dictionary<int, Uri> listed = indexes[0] is { } reference ? ReadVariants(reference.Text, reference.Address) : [];
+        Dictionary<int, Uri> candidates = [];
+        if (indexes[1] is { } source)
         {
-            if (height is null && master.Contains("#EXTINF:", StringComparison.Ordinal))
-                return finalPlaylist;
-            throw new InvalidDataException("播放列表没有可选的分辨率。可尝试选择「自动」。");
+            candidates = ReadVariants(source.Text, source.Address);
+            if (source.Text.Contains("#EXTINF:", StringComparison.Ordinal) && GetCode(source.Address) is int code)
+                candidates.TryAdd(code, source.Address);
         }
-
-        var selected = variants.Where(variant => height is null || variant.Height == height)
-            .OrderByDescending(variant => variant.Height).ThenByDescending(variant => variant.Bandwidth)
-            .FirstOrDefault();
-        if (selected.Url is not null)
-            return selected.Url;
-
-        string available = string.Join("、", variants.Select(variant => variant.Height)
-            .Where(value => value > 0).Distinct().OrderDescending().Select(value => $"{value}p"));
-        throw new InvalidDataException(available.Length == 0
-            ? "央视未标注这些播放源的分辨率。请选择「自动」。"
-            : $"没有 {height}p 播放源。可选分辨率为 {available}。");
+        CctvQuality[] listedQualities = CctvQuality.All
+            .Where(level => listed.ContainsKey(level.Code) || candidates.ContainsKey(level.Code)).ToArray();
+        // A CCTV direct link already identifies a grade. As in the reference, start at
+        // the higher of that grade and the requested grade.
+        int startCode = Math.Max(quality.Code, direct is null ? 0 : GetCode(direct) ?? 0);
+        foreach (CctvQuality level in CctvQuality.All.Where(level => level.Code <= startCode))
+        {
+            if (!candidates.TryGetValue(level.Code, out Uri? stream))
+                continue;
+            var media = await ReadPlaylistAsync(stream.AbsoluteUri, token).ConfigureAwait(false);
+            if (media is { } checkedMedia && checkedMedia.Text.Contains("#EXTINF:", StringComparison.Ordinal) &&
+                GetCode(checkedMedia.Address) == level.Code)
+                return new CctvMediaLink(checkedMedia.Address, level, listedQualities);
+        }
+        string grades = string.Join("、", listedQualities.Select(level => level.Label));
+        throw new InvalidDataException(grades.Length == 0
+            ? "央视接口没有返回可播放的清晰度档位。"
+            : $"央视清单列出 {grades}。当前没有可直接预览或下载的公开播放源。");
     }
 
-    private static async Task<IReadOnlyList<CctvEpisode>> GetAlbumAsync(string album, Uri page, CancellationToken token,
+    private async Task<IReadOnlyList<CctvEpisode>> GetAlbumAsync(string album, Uri page, CancellationToken token,
         string? html = null, CctvEpisode? current = null)
     {
         var episodes = new List<CctvEpisode>();
@@ -179,37 +183,57 @@ public sealed class CctvLinkResolver : ICctvLinkResolver
         return episodes;
     }
 
-    private static List<(Uri Url, int Height, int Bandwidth)> ReadVariants(string text, Uri playlist)
+    private static Dictionary<int, Uri> ReadVariants(string text, Uri playlist)
     {
-        var variants = new List<(Uri, int, int)>();
-        string? attributes = null;
+        var variants = new Dictionary<int, Uri>();
+        bool expectUri = false;
         foreach (string line in text.Split('\n'))
         {
             string value = line.Trim();
             if (value.StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal))
-                attributes = value;
-            else if (value.Length > 0 && value[0] != '#' && attributes is not null)
+                expectUri = true;
+            else if (expectUri && value.Length > 0 && value[0] != '#')
             {
-                if (TryHttpUri(playlist, value, out Uri? url))
-                    variants.Add((url!, Number(Resolution, attributes), Number(Bandwidth, attributes)));
-                attributes = null;
+                if (TryHttpUri(playlist, value, out Uri? url) && GetCode(url!) is int code)
+                    variants.TryAdd(code, url!);
+                expectUri = false;
             }
         }
         return variants;
     }
 
-    private static async Task<JsonDocument> GetJsonAsync(Uri address, Uri referer, CancellationToken token)
+    private async Task<(string Text, Uri Address)?> ReadPlaylistAsync(string url, CancellationToken token)
+    {
+        if (!TryHttpUri(Site, url, out Uri? address))
+            return null;
+        try
+        {
+            (string text, Uri finalAddress) = await GetTextAsync(address!, Site, token).ConfigureAwait(false);
+            return IsHls(text) ? (text, finalAddress) : null;
+        }
+        catch (HttpRequestException) { return null; }
+        catch (OperationCanceledException) when (!token.IsCancellationRequested) { return null; }
+    }
+
+    private static bool IsHls(string text) => text.TrimStart('\uFEFF', ' ', '\r', '\n').StartsWith("#EXTM3U", StringComparison.Ordinal);
+    private static string ExtractVideoId(string html)
+    {
+        string guid = Group(PageVideoId, html);
+        return guid.Length == 0 ? Group(EmbeddedVideoId, html) : guid;
+    }
+
+    private async Task<JsonDocument> GetJsonAsync(Uri address, Uri referer, CancellationToken token)
     {
         (string body, _) = await GetTextAsync(address, referer, token).ConfigureAwait(false);
         return JsonDocument.Parse(body);
     }
 
-    private static async Task<(string Text, Uri Address)> GetTextAsync(Uri address, Uri referer, CancellationToken token)
+    private async Task<(string Text, Uri Address)> GetTextAsync(Uri address, Uri referer, CancellationToken token)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, address);
         request.Headers.UserAgent.ParseAdd("Mozilla/5.0");
         request.Headers.Referrer = referer;
-        using HttpResponseMessage response = await Http.SendAsync(request, token).ConfigureAwait(false);
+        using HttpResponseMessage response = await (http ?? Http).SendAsync(request, token).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadAsStringAsync(token).ConfigureAwait(false), response.RequestMessage!.RequestUri!);
     }
@@ -220,8 +244,14 @@ public sealed class CctvLinkResolver : ICctvLinkResolver
     private static string Value(JsonElement element, string name) => Property(element, name).ToString();
     private static string Decode(string value) => WebUtility.HtmlDecode(value).Trim();
     private static string Group(Regex pattern, string value) => pattern.Match(value).Groups[1].Value;
-    private static int Number(Regex pattern, string value) =>
-        int.TryParse(Group(pattern, value), NumberStyles.None, CultureInfo.InvariantCulture, out int number) ? number : 0;
+    private static int? GetCode(Uri url)
+    {
+        string path = url.AbsolutePath;
+        string code = Group(VariantCode, path);
+        if (code.Length == 0)
+            code = Path.GetFileNameWithoutExtension(path);
+        return int.TryParse(code, out int number) && CctvQuality.All.Any(level => level.Code == number) ? number : null;
+    }
     private static Regex Pattern(string pattern, RegexOptions options = RegexOptions.None) =>
         new(pattern, options | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 

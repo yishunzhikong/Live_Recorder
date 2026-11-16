@@ -48,18 +48,7 @@
                                  TextChanged="CctvSource_TextChanged" />
                         <CheckBox x:Name="CctvIncludeAlbumBox" Content="从节目页查找所属专辑" />
                         <Button x:Name="AnalyzeCctvButton" Content="解析链接" Click="AnalyzeCctv_Click" />
-                        <ComboBox x:Name="CctvQualityBox" Header="分辨率" HorizontalAlignment="Stretch" SelectedIndex="0">
-                            <ComboBoxItem Content="自动（最高可用）" />
-                            <ComboBoxItem Content="4K · 2160p" Tag="2160" />
-                            <ComboBoxItem Content="1440p" Tag="1440" />
-                            <ComboBoxItem Content="超清 · 1080p" Tag="1080" />
-                            <ComboBoxItem Content="高清 · 720p" Tag="720" />
-                            <ComboBoxItem Content="576p" Tag="576" />
-                            <ComboBoxItem Content="标清 · 540p" Tag="540" />
-                            <ComboBoxItem Content="480p" Tag="480" />
-                            <ComboBoxItem Content="360p" Tag="360" />
-                            <ComboBoxItem Content="流畅 · 270p" Tag="270" />
-                        </ComboBox>
+                        <ComboBox x:Name="CctvQualityBox" Header="分辨率" HorizontalAlignment="Stretch" DisplayMemberPath="Label" />
                         <StackPanel x:Name="CctvEpisodePanel" Spacing="6" Visibility="Collapsed">
                             <TextBlock Text="剧集" />
                             <StackPanel Orientation="Horizontal" Spacing="8">
