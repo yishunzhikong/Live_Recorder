@@ -16,9 +16,18 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>../../icon/icon.ico</ApplicationIcon>
+    <BundledFFmpegDirectory>$(MSBuildProjectDirectory)/../../.tools/ffmpeg-9.0.2</BundledFFmpegDirectory>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
     <ProjectReference Include="../LiveRecorder.Core/LiveRecorder.Core.csproj" />
+    <None Include="../../icon/icon.ico" Link="Assets/icon.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="$(BundledFFmpegDirectory)/ffmpeg.exe;$(BundledFFmpegDirectory)/LICENSE;$(BundledFFmpegDirectory)/README.txt"
+          Link="ffmpeg/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="PrepareBundledFFmpeg" BeforeTargets="PrepareForBuild"
+          Condition="'$(DesignTimeBuild)' != 'true' and (!Exists('$(BundledFFmpegDirectory)/ffmpeg.exe') or !Exists('$(BundledFFmpegDirectory)/LICENSE') or !Exists('$(BundledFFmpegDirectory)/README.txt'))">
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)/../../build/Get-FFmpeg.ps1&quot; -Destination &quot;$(BundledFFmpegDirectory)&quot;" />
+  </Target>
 </Project>

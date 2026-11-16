@@ -37,7 +37,7 @@ internal static class FfmpegProcess
         try { process.Start(); }
         catch (System.ComponentModel.Win32Exception ex)
         {
-            throw new InvalidOperationException("无法启动 FFmpeg。请检查所选文件，或将 ffmpeg.exe 放在应用目录或 PATH 中。", ex);
+            throw new InvalidOperationException("无法启动内置 FFmpeg，请重新完整解压发布包。", ex);
         }
 
         using var exitMonitoring = new CancellationTokenSource();

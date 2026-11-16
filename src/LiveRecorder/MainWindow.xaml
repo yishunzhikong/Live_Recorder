@@ -69,16 +69,6 @@
                             <NumberBox x:Name="PartSizeBox" Grid.Column="1" Header="录制分片大小（MB）" Value="1" Minimum="1" Maximum="1024"
                                        SpinButtonPlacementMode="Compact" HorizontalAlignment="Stretch" />
                         </Grid>
-                        <Expander Header="FFmpeg 路径" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
-                            <Grid ColumnSpacing="8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
-                                <TextBox x:Name="FfmpegBox" PlaceholderText="留空时搜索应用目录和 PATH" AutomationProperties.Name="FFmpeg 路径" />
-                                <Button x:Name="FfmpegPickerButton" Grid.Column="1" Content="浏览…" Click="PickFfmpeg_Click" />
-                            </Grid>
-                        </Expander>
                     </StackPanel>
                 </Border>
 

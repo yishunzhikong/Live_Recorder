@@ -12,6 +12,7 @@ namespace LiveRecorder;
 public sealed partial class MainWindow : Window
 {
     private readonly nint _handle;
+    private readonly MediaService _media = new(Path.Combine(AppContext.BaseDirectory, "ffmpeg", "ffmpeg.exe"));
     private CancellationTokenSource? _operation;
     private ContentDialog? _mergePrompt;
     private string? _lastResultFolder;
@@ -30,6 +31,7 @@ public sealed partial class MainWindow : Window
 
         double scale = Math.Max(96u, GetDpiForWindow(_handle)) / 96.0;
         RectInt32 workArea = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Primary).WorkArea;
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
         AppWindow.Resize(new SizeInt32(
             Math.Min((int)(880 * scale), workArea.Width),
             Math.Min((int)(940 * scale), workArea.Height)));
@@ -42,18 +44,17 @@ public sealed partial class MainWindow : Window
     private async void Download_Click(object sender, RoutedEventArgs e) => await RunAsync("下载中", async token =>
     {
         Uri source = MediaService.ParseSource(SourceBox.Text);
-        string output = await Service().DownloadAsync(source, OutputDirectory(), CreateProgress(), token);
+        string output = await _media.DownloadAsync(source, OutputDirectory(), CreateProgress(), token);
         ShowOutput("下载完成", output);
     });
 
     private async void Record_Click(object sender, RoutedEventArgs e) => await RunAsync("录制中", async token =>
     {
         Uri source = MediaService.ParseSource(SourceBox.Text);
-        MediaService service = Service();
         string directory = OutputDirectory();
         VideoEncoder encoder = SelectedEncoder();
-        RecordingResult recording = await service.RecordAsync(source, directory, PartSize(), encoder, CreateProgress(), token);
-        await FinishRecordingAsync(service, recording, directory, encoder);
+        RecordingResult recording = await _media.RecordAsync(source, directory, PartSize(), encoder, CreateProgress(), token);
+        await FinishRecordingAsync(recording, directory, encoder);
     });
 
     private async void RecordSdp_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
@@ -63,11 +64,10 @@ public sealed partial class MainWindow : Window
             return;
         await RunAsync("录制中", async token =>
         {
-            MediaService service = Service();
             string directory = OutputDirectory();
             VideoEncoder encoder = SelectedEncoder();
-            RecordingResult recording = await service.RecordSdpAsync(file, directory, PartSize(), encoder, CreateProgress(), token);
-            await FinishRecordingAsync(service, recording, directory, encoder);
+            RecordingResult recording = await _media.RecordSdpAsync(file, directory, PartSize(), encoder, CreateProgress(), token);
+            await FinishRecordingAsync(recording, directory, encoder);
         });
     });
 
@@ -79,7 +79,7 @@ public sealed partial class MainWindow : Window
         await RunAsync("合并中", async token =>
         {
             _lastResultFolder = folder;
-            string output = await Service().MergeAsync(folder, OutputDirectory(), SelectedEncoder(),
+            string output = await _media.MergeAsync(folder, OutputDirectory(), SelectedEncoder(),
                 ReencodeBox.IsChecked != true, CreateProgress(), token);
             ShowOutput("合并完成", output);
         });
@@ -92,7 +92,7 @@ public sealed partial class MainWindow : Window
             return;
         await RunAsync("转码中", async token =>
         {
-            string output = await Service().TranscodeAsync(file, OutputDirectory(), SelectedEncoder(), CreateProgress(), token);
+            string output = await _media.TranscodeAsync(file, OutputDirectory(), SelectedEncoder(), CreateProgress(), token);
             ShowOutput("转码完成", output);
         });
     });
@@ -104,12 +104,6 @@ public sealed partial class MainWindow : Window
             OutputBox.Text = folder;
             _lastResultFolder = null;
         }
-    });
-
-    private async void PickFfmpeg_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
-    {
-        if (await PickFileAsync(".exe") is { } file)
-            FfmpegBox.Text = file;
     });
 
     private async Task HandlePickerAsync(Func<Task> action)
@@ -134,7 +128,7 @@ public sealed partial class MainWindow : Window
         return (await picker.PickSingleFileAsync())?.Path;
     }
 
-    private async Task FinishRecordingAsync(MediaService service, RecordingResult recording, string directory, VideoEncoder encoder)
+    private async Task FinishRecordingAsync(RecordingResult recording, string directory, VideoEncoder encoder)
     {
         _lastResultFolder = recording.Directory;
         string summary = $"已保存 {recording.PartCount} 个分片。{Environment.NewLine}{recording.Directory}";
@@ -167,7 +161,7 @@ public sealed partial class MainWindow : Window
         _operation!.Dispose();
         _operation = new CancellationTokenSource();
         StartStage("合并中");
-        string output = await service.MergeAsync(recording.Directory, directory, encoder,
+        string output = await _media.MergeAsync(recording.Directory, directory, encoder,
             choice == ContentDialogResult.Primary, CreateProgress(), _operation.Token);
         ShowOutput("合并完成", output);
     }
@@ -271,7 +265,7 @@ public sealed partial class MainWindow : Window
     private void SetControlsEnabled(bool enabled)
     {
         foreach (Control control in new Control[] { SourceBox, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
-            EncoderBox, PartSizeBox, FfmpegBox, FfmpegPickerButton, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
+            EncoderBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
             control.IsEnabled = enabled;
     }
 
@@ -304,19 +298,4 @@ public sealed partial class MainWindow : Window
     }
 
     private VideoEncoder SelectedEncoder() => (VideoEncoder)EncoderBox.SelectedIndex;
-
-    private MediaService Service()
-    {
-        string path = Environment.ExpandEnvironmentVariables(FfmpegBox.Text.Trim().Trim('"'));
-        if (path.Length == 0)
-        {
-            string bundled = Path.Combine(AppContext.BaseDirectory, "ffmpeg.exe");
-            path = File.Exists(bundled) ? bundled : "ffmpeg.exe";
-        }
-        else if (!Path.IsPathFullyQualified(path) || !File.Exists(path))
-        {
-            throw new FileNotFoundException("请选择存在的 FFmpeg 可执行文件。");
-        }
-        return new MediaService(path);
-    }
 }
