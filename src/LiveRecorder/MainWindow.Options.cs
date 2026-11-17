@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace LiveRecorder;
 
+// 管理输出位置、录制重连、编码及日志设置的界面和持久化。
 public sealed partial class MainWindow
 {
     private string _defaultOutput = "";
@@ -55,6 +56,7 @@ public sealed partial class MainWindow
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             RecordingReconnectSettings saved = PortableStorage.Configuration.Current.Media.Reconnect;
+            // 程序回填数值也会触发变更事件。回滚时暂停保存，避免递归写入。
             _restoringReconnectSettings = true;
             try
             {
@@ -79,11 +81,11 @@ public sealed partial class MainWindow
         {
             PortableStorage.Configuration.Update(settings =>
                 settings with { Media = settings.Media with { Mode = mode, Volume = volume, Muted = muted } });
-            PortableStorage.Log.Write(LogLevel.Debug, "Configuration", "已保存媒体设置。");
+            WriteWindowLog(LogLevel.Debug, "Configuration", "已保存媒体设置。");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            PortableStorage.Log.Write(LogLevel.Error, "Configuration", "无法保存媒体设置。", ex);
+            WriteWindowLog(LogLevel.Error, "Configuration", "无法保存媒体设置。", ex);
         }
     }
 
@@ -152,6 +154,7 @@ public sealed partial class MainWindow
         var audioCodec = SettingChoice("音频格式", (int)previous.AudioFormat, "AAC", "MP3", "AC-3", "Opus");
         var keepSamples = SettingCheck("保持原采样率", previous.KeepAudioSampleRate);
         int[] sampleRates = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000];
+        // 保留已保存但未出现在常用选项中的采样率，打开设置时可以原样选中。
         sampleRates = sampleRates.Append(previous.AudioSampleRate).Distinct().Order().ToArray();
         var samples = SettingChoice("音频采样率", Array.IndexOf(sampleRates, previous.AudioSampleRate),
             sampleRates.Select(value => $"{value} Hz").ToArray());
@@ -180,6 +183,7 @@ public sealed partial class MainWindow
         if (await ShowOptionsAsync("编码设置", panel, Save, scrollWidth: 516))
             SetStatus("编码设置已保存", "转码、重新编码合并，以及原流无法直接封装的录制将使用这些设置。");
 
+        // 根据「保持原样」与编码模式启用对应控件，仍保留用户之前填写的值。
         void SyncControls()
         {
             codec.IsEnabled = keepVideoFormat.IsChecked != true;
@@ -241,6 +245,13 @@ public sealed partial class MainWindow
         }
     });
 
+    /// <summary>显示设置表单，并在点击保存时执行校验和持久化。</summary>
+    /// <param name="title">对话框标题。</param>
+    /// <param name="content">需要显示的设置表单。</param>
+    /// <param name="save">校验并持久化设置的同步操作。</param>
+    /// <param name="scrollWidth">可选的表单滚动区目标宽度，单位为有效像素。</param>
+    /// <returns>保存成功并通过主按钮关闭时返回 <see langword="true" />。</returns>
+    /// <remarks>表单校验或保存失败时保留对话框，并展示错误。</remarks>
     private async Task<bool> ShowOptionsAsync(string title, FrameworkElement content, Action save, double? scrollWidth = null)
     {
         XamlRoot root = ((FrameworkElement)Content).XamlRoot;
@@ -260,6 +271,7 @@ public sealed partial class MainWindow
         if (scrollWidth is double targetWidth)
             dialog.Resources["ContentDialogMaxWidth"] = targetWidth + 48;
         UpdateBounds();
+        // 随窗口尺寸调整对话框的可滚动区域，确保底部设置可达。
         root.Changed += RootChanged;
         dialog.PrimaryButtonClick += (_, args) =>
         {
@@ -271,7 +283,7 @@ public sealed partial class MainWindow
                 error.IsOpen = true;
                 body.ChangeView(null, 0, null);
                 if (ex is IOException or UnauthorizedAccessException or JsonException)
-                    PortableStorage.Log.Write(LogLevel.Error, "Configuration", $"无法保存「{title}」设置。", ex);
+                    WriteWindowLog(LogLevel.Error, "Configuration", $"无法保存「{title}」设置。", ex);
             }
         };
         try { return await dialog.ShowAsync() == ContentDialogResult.Primary; }

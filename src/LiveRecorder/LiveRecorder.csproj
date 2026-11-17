@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <!-- 桌面程序以 x64 非打包方式运行，并随输出提供 Windows App SDK 运行时。 -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
@@ -22,6 +23,7 @@
     <ApplicationIcon>../../icon/icon.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
+    <!-- LibVLCSharp 提供预览控件，VideoLAN 包提供本地解码和播放运行时。 -->
     <PackageReference Include="LibVLCSharp.WinUI" Version="3.10.2" />
     <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />

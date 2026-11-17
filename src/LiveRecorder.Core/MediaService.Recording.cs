@@ -5,12 +5,33 @@ using System.Text.RegularExpressions;
 
 namespace LiveRecorder.Core;
 
+/// <summary>描述一次连续录制保存的分片目录。</summary>
+/// <param name="Directory">分片目录的完整路径。</param>
+/// <param name="PartCount">已保存的分片数。</param>
+/// <param name="Reencoded">是否有原轨道需重新编码才能封装。</param>
 public sealed record RecordingFolder(string Directory, int PartCount, bool Reencoded);
+/// <summary>描述一次录制任务保存的结果。</summary>
+/// <param name="Folders">按创建顺序排列的非空录制目录。</param>
+/// <param name="Interruption">导致录制提前结束的原因。正常结束或手动停止时可为空。</param>
 public sealed record RecordingResult(IReadOnlyList<RecordingFolder> Folders, string? Interruption);
+/// <summary>描述一次断流等待或恢复录制事件。</summary>
+/// <param name="Time">事件发生时间。</param>
+/// <param name="Recovered">是否已经恢复录制。</param>
+/// <param name="Detail">可显示或记录的事件详情。</param>
 public sealed record RecordingEvent(DateTimeOffset Time, bool Recovered, string Detail);
+/// <summary>集中定义录制分片、回退编码和重连选项。</summary>
+/// <param name="PartMegabytes">单个录制分片的大小上限，单位为十进制 MB，范围为 1 至 1024。</param>
+/// <param name="Encoder">原流无法直接封装且需要视频编码时使用的编码器。</param>
+/// <param name="Deinterlace">视频重新编码时的去隔行模式。</param>
+/// <param name="Encoding">可选的录制回退编码设置。</param>
+/// <param name="Reconnect">可选的重连参数。</param>
 public sealed record RecordingOptions(int PartMegabytes, VideoEncoder Encoder, DeinterlaceMode Deinterlace = DeinterlaceMode.Automatic,
     EncodingSettings? Encoding = null, RecordingReconnectSettings? Reconnect = null);
 
+/// <summary>定义录制断流检测和重连的时间参数。</summary>
+/// <param name="StallSeconds">连续无媒体数据多少秒后判定断流。</param>
+/// <param name="RetrySeconds">尝试恢复的间隔秒数。</param>
+/// <param name="MaxWaitMinutes">从检测到断流起允许等待恢复的分钟数。</param>
 public sealed record RecordingReconnectSettings(int StallSeconds = 10, int RetrySeconds = 2, int MaxWaitMinutes = 3)
 {
     public const int MaxSeconds = 3600;
@@ -24,8 +45,23 @@ public sealed record RecordingReconnectSettings(int StallSeconds = 10, int Retry
     };
 }
 
+// 管理录制、媒体长时间无数据后的重连，以及每次恢复时独立保存分片。
 public sealed partial class MediaService
 {
+    /// <summary>使用分开的录制设置参数从网络媒体源录制。</summary>
+    /// <param name="source">媒体源地址。</param>
+    /// <param name="directory">存放录制分片目录的父目录。</param>
+    /// <param name="partMegabytes">单个录制分片的大小上限，单位为十进制 MB，范围为 1 至 1024。</param>
+    /// <param name="encoder">原流无法直接封装且需要视频编码时使用的编码器。</param>
+    /// <param name="progress">可选的任务进度接收方。</param>
+    /// <param name="token">用于停止任务的取消令牌。</param>
+    /// <param name="deinterlace">视频重新编码时的去隔行模式。</param>
+    /// <param name="settings">可选的录制回退编码设置。</param>
+    /// <param name="live">可选的直播标记。为空时由服务推断。</param>
+    /// <param name="events">可选的断流和恢复事件接收方。</param>
+    /// <param name="reconnect">可选的重连参数。</param>
+    /// <param name="headers">可选的媒体请求头。</param>
+    /// <returns>返回各录制目录和终止原因。取消时若已有有效分片，仍返回已录制结果。</returns>
     public Task<RecordingResult> RecordAsync(Uri source, string directory, int partMegabytes, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
         EncodingSettings? settings = null, bool? live = null, IProgress<RecordingEvent>? events = null,
@@ -33,16 +69,51 @@ public sealed partial class MediaService
         RecordAsync(source, directory, new RecordingOptions(partMegabytes, encoder, deinterlace, settings, reconnect),
             progress, token, live, events, headers);
 
+    /// <summary>使用统一的录制选项从网络媒体源录制。</summary>
+    /// <param name="source">媒体源地址。</param>
+    /// <param name="directory">存放录制分片目录的父目录。</param>
+    /// <param name="options">本次录制的分片、编码和重连设置。</param>
+    /// <param name="progress">可选的任务进度接收方。</param>
+    /// <param name="token">用于停止任务的取消令牌。</param>
+    /// <param name="live">可选的直播标记。为空时由服务推断。</param>
+    /// <param name="events">可选的断流和恢复事件接收方。</param>
+    /// <param name="headers">可选的媒体请求头。</param>
+    /// <returns>返回各录制目录和终止原因。取消时若已有有效分片，仍返回已录制结果。</returns>
+    /// <exception cref="ArgumentOutOfRangeException">分片上限超出允许范围。</exception>
+    /// <exception cref="OperationCanceledException">取消时尚未保存有效分片。</exception>
     public Task<RecordingResult> RecordAsync(Uri source, string directory, RecordingOptions options, IProgress<MediaProgress>? progress,
         CancellationToken token, bool? live = null, IProgress<RecordingEvent>? events = null, MediaRequestHeaders? headers = null) =>
         RecordSessionAsync(NetworkInput(source, headers: headers), source, live, directory, options, progress, token, events, headers);
 
+    /// <summary>使用分开的录制设置参数，从本地 SDP 描述的 RTP 或 UDP 会话录制。</summary>
+    /// <param name="path">有效的本地 SDP 文件路径。</param>
+    /// <param name="directory">存放录制分片目录的父目录。</param>
+    /// <param name="partMegabytes">单个录制分片的大小上限，单位为十进制 MB，范围为 1 至 1024。</param>
+    /// <param name="encoder">原流无法直接封装且需要视频编码时使用的编码器。</param>
+    /// <param name="progress">可选的任务进度接收方。</param>
+    /// <param name="token">用于停止任务的取消令牌。</param>
+    /// <param name="deinterlace">视频重新编码时的去隔行模式。</param>
+    /// <param name="settings">可选的录制回退编码设置。</param>
+    /// <param name="events">可选的断流和恢复事件接收方。</param>
+    /// <param name="reconnect">可选的重连参数。</param>
+    /// <returns>返回各录制目录和终止原因。取消时若已有有效分片，仍返回已录制结果。</returns>
+    /// <exception cref="ArgumentException">文件不存在或扩展名不是 .sdp。</exception>
     public Task<RecordingResult> RecordSdpAsync(string path, string directory, int partMegabytes, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
         EncodingSettings? settings = null, IProgress<RecordingEvent>? events = null, RecordingReconnectSettings? reconnect = null) =>
         RecordSdpAsync(path, directory, new RecordingOptions(partMegabytes, encoder, deinterlace, settings, reconnect),
             progress, token, events);
 
+    /// <summary>从本地 SDP 描述的会话录制，并按照直播规则重连。</summary>
+    /// <param name="path">有效的本地 SDP 文件路径。</param>
+    /// <param name="directory">存放录制分片目录的父目录。</param>
+    /// <param name="options">本次录制的分片、编码和重连设置。</param>
+    /// <param name="progress">可选的任务进度接收方。</param>
+    /// <param name="token">用于停止任务的取消令牌。</param>
+    /// <param name="events">可选的断流和恢复事件接收方。</param>
+    /// <returns>返回各录制目录和终止原因。取消时若已有有效分片，仍返回已录制结果。</returns>
+    /// <exception cref="ArgumentException">文件不存在或扩展名不是 .sdp。</exception>
+    /// <exception cref="ArgumentOutOfRangeException">分片上限超出允许范围。</exception>
     public Task<RecordingResult> RecordSdpAsync(string path, string directory, RecordingOptions options,
         IProgress<MediaProgress>? progress, CancellationToken token, IProgress<RecordingEvent>? events = null)
     {
@@ -72,6 +143,7 @@ public sealed partial class MediaService
         bool liveHls = false;
         IReadOnlySet<Uri>? previousHlsRequests = null;
         long? previousHlsSequence = null;
+        // 使用单调时钟计算等待上限，系统时间变动不会延长重连期限。
         long? outage = null;
         string? terminal = null;
 
@@ -103,6 +175,7 @@ public sealed partial class MediaService
                     HttpMediaState? current = await InspectHttpMediaAsync(source!, check.Token, headers).ConfigureAwait(false);
                     if (current?.HlsSegments is not { Count: > 0 } segments)
                         continue;
+                    // 直播清单没有推进时继续等待。结束清单若还有新分片，则尝试保存尾段。
                     hlsStart = FindHlsResumeIndex(current, previousHlsRequests, previousHlsSequence);
                     if (hlsStart == segments.Count)
                     {
@@ -149,6 +222,7 @@ public sealed partial class MediaService
             string? tailPlaylist = null;
             try
             {
+                // 简单的结束清单可直接裁出尾段。其他清单保留原地址，交给 FFmpeg 按时间定位。
                 if (hlsStart > 0 && finalPlaylist is { CanTrimHls: true } && headers is null)
                 {
                     tailPlaylist = Path.Combine(cacheDirectory, $"hls-tail-{Guid.NewGuid():N}.m3u8");
@@ -170,6 +244,7 @@ public sealed partial class MediaService
             if (attempt.Folder is { } recorded)
             {
                 folders.Add(recorded);
+                // 有分片写出后才视为本轮恢复，后续断流重新计时。
                 outage = null;
                 if (attempt.HlsRequests.Count > 0)
                 {
@@ -234,6 +309,7 @@ public sealed partial class MediaService
         return new RecordingResult(folders.AsReadOnly(), terminal);
     }
 
+    // 优先用 FFmpeg 最近请求过的分片 URI 定位。旧分片滑出窗口后再使用序号。
     private static int FindHlsResumeIndex(HttpMediaState state, IReadOnlySet<Uri> previousRequests, long? previousSequence)
     {
         IReadOnlyList<HlsSegment> segments = state.HlsSegments!;
@@ -286,6 +362,7 @@ public sealed partial class MediaService
                     if (!token.IsCancellationRequested)
                         stallDetected = (DateTimeOffset.Now, Stopwatch.GetTimestamp());
                 });
+                // 首次读到输出前使用启动期限，之后每次收到媒体数据都会重置无数据计时。
                 watch.CancelAfter(startupWait);
                 try
                 {
@@ -315,6 +392,7 @@ public sealed partial class MediaService
                         throw;
                     convertVideo |= ex.Video;
                     convertAudio |= !ex.Video;
+                    // MPEG-TS 无法直接封装某条轨道时，用编码设置重试该轨道。
                     EncodingSettings settings = options.Encoding ?? DefaultTranscodeSettings;
                     EncodingSettings fallback = settings with
                     {
@@ -349,6 +427,7 @@ public sealed partial class MediaService
         return new RecordingAttempt(folder, error, stalled, hls, durationUnknown, lastMediaAt, stalled ? stallDetected : null,
             requestedSegments.ToHashSet());
 
+        // 首次写入有效分片时才创建目录，连接失败的尝试不会留下空目录。
         string BeginFolder()
         {
             DateTimeOffset started = DateTimeOffset.Now;

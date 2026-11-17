@@ -3,6 +3,8 @@ using System.Diagnostics;
 
 namespace LiveRecorder.Core;
 
+/// <summary>管理供预览播放器读取的子进程媒体流。</summary>
+/// <remarks>调用方应持续消费 <see cref="Content" />，使用结束后异步释放本对象。</remarks>
 public sealed class PreviewStream : IAsyncDisposable
 {
     private readonly Process _process;
@@ -16,7 +18,9 @@ public sealed class PreviewStream : IAsyncDisposable
         Completion = MonitorAsync(process, errorMessage, token);
     }
 
+    /// <summary>子进程标准输出中的媒体数据流。</summary>
     public Stream Content { get; }
+    /// <summary>监控子进程退出的任务。非零退出通过任务异常报告。</summary>
     public Task Completion { get; }
 
     internal static PreviewStream Start(ProcessStartInfo start, string errorMessage, CancellationToken token)
@@ -42,6 +46,7 @@ public sealed class PreviewStream : IAsyncDisposable
 
     private static async Task MonitorAsync(Process process, string errorMessage, CancellationToken token)
     {
+        // 持续排空 stderr，避免诊断管道填满后阻塞媒体输出。
         Task<string> errors = ToolProcess.ReadDiagnosticTailAsync(process.StandardError);
         try
         {
@@ -55,11 +60,14 @@ public sealed class PreviewStream : IAsyncDisposable
         finally { await errors.ConfigureAwait(false); }
     }
 
+    /// <summary>停止子进程并释放诊断监控、取消注册和输出流。</summary>
+    /// <returns>等待清理完成的任务。</returns>
     public async ValueTask DisposeAsync()
     {
         try
         {
             ToolProcess.Stop(_process);
+            // 等监控结束后再释放管道和进程，避免读取任务访问已释放的句柄。
             await Completion.ConfigureAwait(false);
         }
         catch (Exception ex) { Debug.WriteLine(ex); }

@@ -1,20 +1,25 @@
 using System.Runtime.InteropServices;
-using LiveRecorder.Core;
 using Microsoft.UI.Windowing;
 using Windows.Graphics;
 
 namespace LiveRecorder;
 
+/// <summary>通过原生窗口消息约束主窗口的 16:9 比例。</summary>
 internal static class WindowAspect
 {
     private const uint WmSizing = 0x0214;
     private const uint WmNcDestroy = 0x0082;
     private static readonly SubclassProc Resize = OnWindowMessage;
 
-    public static void Apply(AppWindow window, nint handle)
+    /// <summary>设置主窗口初始比例，并注册拖动尺寸的原生回调。</summary>
+    /// <param name="window">需要设置位置和初始尺寸的应用窗口。</param>
+    /// <param name="handle">同一窗口的原生句柄。</param>
+    /// <returns>原生回调注册成功时返回 <see langword="true" />。</returns>
+    public static bool Apply(AppWindow window, nint handle)
     {
         double scale = Math.Max(96u, GetDpiForWindow(handle)) / 96.0;
         RectInt32 workArea = DisplayArea.GetFromWindowId(window.Id, DisplayAreaFallback.Primary).WorkArea;
+        // 在显示器工作区内选择比例单位，初始尺寸和最小尺寸使用同一比例。
         int unit = Math.Min((int)Math.Round(80 * scale), Math.Min(workArea.Width / 16, workArea.Height / 9));
         int minimumUnit = Math.Min(unit, (int)Math.Ceiling(60 * scale));
         if (window.Presenter is OverlappedPresenter presenter)
@@ -25,8 +30,7 @@ internal static class WindowAspect
         }
         window.MoveAndResize(new RectInt32(workArea.X + (workArea.Width - 16 * unit) / 2,
             workArea.Y + (workArea.Height - 9 * unit) / 2, 16 * unit, 9 * unit));
-        if (!SetWindowSubclass(handle, Resize, 1, (nuint)minimumUnit))
-            PortableStorage.Log.Write(LogLevel.Warning, "Window", "无法启用 16:9 拖动约束，窗口将使用系统调整大小。");
+        return SetWindowSubclass(handle, Resize, 1, (nuint)minimumUnit);
     }
 
     private static nint OnWindowMessage(nint handle, uint message, nuint edge, nint parameter, nuint id, nuint minimumUnit)
@@ -41,6 +45,7 @@ internal static class WindowAspect
         double heightUnits = (rect.Bottom - rect.Top) / 9d;
         double widthChange = Math.Abs(widthUnits - (current.Right - current.Left) / 16d);
         double heightChange = Math.Abs(heightUnits - (current.Bottom - current.Top) / 9d);
+        // 水平或垂直边由拖动轴决定尺寸。拖动角时采用变化较大的一轴。
         double units = edge switch
         {
             1 or 2 => widthUnits,
@@ -48,6 +53,7 @@ internal static class WindowAspect
             _ => widthChange >= heightChange ? widthUnits : heightUnits
         };
         int unit = Math.Max((int)minimumUnit, (int)Math.Round(units));
+        // 调整被拖动的边，并保留其对边的位置。
         if (edge is 1 or 4 or 7)
             rect.Left = rect.Right - 16 * unit;
         else

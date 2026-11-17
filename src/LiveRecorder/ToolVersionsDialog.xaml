@@ -4,13 +4,13 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="工具版本管理"
     CloseButtonText="关闭"
-    Closing="Dialog_Closing"
-    Loaded="Dialog_Loaded">
+    Closing="Dialog_Closing">
     <StackPanel MinWidth="380" Spacing="12">
         <ComboBox x:Name="ToolBox" Header="工具" SelectionChanged="Tool_Changed">
             <ComboBoxItem Content="FFmpeg" />
             <ComboBoxItem Content="yt-dlp" />
         </ComboBox>
+        <!-- 已安装列表支持切换或删除版本，并标明当前使用项。 -->
         <StackPanel Spacing="4">
             <TextBlock x:Name="ActiveVersion" />
             <ListView x:Name="VersionList" DisplayMemberPath="Label" SelectionChanged="Version_Changed"
@@ -30,6 +30,7 @@
                 </Button>
             </StackPanel>
         </StackPanel>
+        <!-- 点击刷新才获取上游列表，随后可继续分页或安装选中的版本。 -->
         <Grid ColumnSpacing="8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
@@ -37,7 +38,7 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <ComboBox x:Name="AvailableVersions" Header="可安装版本" PlaceholderText="选择版本"
+            <ComboBox x:Name="AvailableVersions" Header="可安装版本" PlaceholderText="点击「刷新」获取版本"
                       HorizontalAlignment="Stretch" SelectionChanged="Version_Changed" />
             <Button x:Name="InstallButton" Grid.Column="1" VerticalAlignment="Bottom" Content="安装版本" Click="Install_Click" />
             <Button x:Name="MoreButton" Grid.Column="2" VerticalAlignment="Bottom" Content="更多版本" Click="More_Click" />

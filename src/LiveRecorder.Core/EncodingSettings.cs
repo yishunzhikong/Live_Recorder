@@ -11,6 +11,8 @@ public enum BitrateUnit { Kbps, Mbps }
 public enum EncodingQuality { Smaller, Standard, Higher }
 public enum AudioFormat { Aac, Mp3, Ac3, Opus }
 
+/// <summary>为视频与音频轨道保存复制或重新编码的设置。</summary>
+/// <remarks>两类轨道分别判断能否直接复制。保持原格式仍允许因分辨率、码率或其他选项而重新编码。</remarks>
 public sealed record EncodingSettings
 {
     public VideoCodec VideoCodec { get; init; }
@@ -36,6 +38,10 @@ public sealed record EncodingSettings
 
     internal bool CopyAudio => KeepAudioFormat && KeepAudioSampleRate && KeepAudioBitrate;
 
+    /// <summary>检查换算为 kbps 后的视频码率是否在允许范围内。</summary>
+    /// <param name="value">界面输入的码率。</param>
+    /// <param name="unit">输入使用的码率单位。</param>
+    /// <returns>值在 1 至 1,000,000 kbps 范围内时返回 <see langword="true" />。</returns>
     public static bool ValidVideoBitrate(double value, BitrateUnit unit)
     {
         double kbps = unit == BitrateUnit.Mbps ? value * 1000 : value;
@@ -57,6 +63,7 @@ public sealed record EncodingSettings
     };
 }
 
+// 从 FFmpeg 的输入诊断中提取首条有效音视频轨道的参数，供后续编码决策使用。
 internal sealed class SourceEncodingInfo
 {
     private static readonly Regex Stream = new(@"^\s*Stream #0:\d+.*?: (Video|Audio):\s+([\w-]+)", RegexOptions.CultureInvariant);
@@ -70,6 +77,8 @@ internal sealed class SourceEncodingInfo
     public int? AudioSampleRate { get; private set; }
     public bool HasVideo => VideoCodec is not null;
 
+    /// <summary>处理一行 FFmpeg 诊断，记录输入段内首次识别的有效音视频轨道。</summary>
+    /// <param name="line">FFmpeg 标准错误流中的一行。</param>
     public void Read(string line)
     {
         if (line.StartsWith("Input #0,", StringComparison.Ordinal))
@@ -78,6 +87,7 @@ internal sealed class SourceEncodingInfo
             _readingInput = false;
         if (!_readingInput)
             return;
+        // 只读取输入描述，避免把输出轨道的参数当成源参数。
         Match stream = Stream.Match(line);
         if (!stream.Success)
             return;
@@ -109,8 +119,17 @@ internal sealed class SourceEncodingInfo
     }
 }
 
+// 将编码选项和已探测的轨道参数转换成 FFmpeg 参数。
 internal static class EncodingArguments
 {
+    /// <summary>根据源轨道及设置生成 FFmpeg 的复制、过滤和编码参数。</summary>
+    /// <param name="encoder">视频编码器实现。</param>
+    /// <param name="deinterlace">应用于视频轨道的去隔行模式。</param>
+    /// <param name="settings">本次任务的编码设置。</param>
+    /// <param name="source">探测得到的轨道信息。</param>
+    /// <param name="forceVideo">是否在视频原可直拷时仍强制重新编码。</param>
+    /// <returns>按 FFmpeg 参数顺序排列的参数数组，只处理已发现的轨道。</returns>
+    /// <exception cref="InvalidOperationException">无法保留源编码格式，或所需的原始码率、采样率等不可用。</exception>
     public static string[] Create(VideoEncoder encoder, DeinterlaceMode deinterlace, EncodingSettings settings, SourceEncodingInfo source,
         bool forceVideo = false)
     {
@@ -176,6 +195,7 @@ internal static class EncodingArguments
             args.AddRange(["-vf", string.Join(',', filters)]);
         args.AddRange(["-pix_fmt", encoder == VideoEncoder.Intel ? "nv12" : "yuv420p", "-c:v", codec]);
 
+        // 同一质量档位在不同编码器上使用各自的参数和标度。
         if (settings.RateMode == VideoRateMode.Quality)
         {
             if (family is "mpeg2video" or "mpeg4")

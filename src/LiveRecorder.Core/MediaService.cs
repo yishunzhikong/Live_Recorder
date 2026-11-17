@@ -10,7 +10,16 @@ namespace LiveRecorder.Core;
 public enum VideoEncoder { Software, Intel, Nvidia, Amd }
 public enum DeinterlaceMode { Automatic, Always, Off }
 
+/// <summary>表示媒体任务的一次增量进度更新。</summary>
+/// <param name="Bytes">累计处理的字节数。</param>
+/// <param name="TotalBytes">已知的总字节数。</param>
+/// <param name="Parts">已保存的分片数。</param>
+/// <param name="MediaTime">已处理的媒体时长。</param>
+/// <remarks>空字段表示此次更新未提供对应的指标。</remarks>
 public sealed record MediaProgress(long? Bytes = null, long? TotalBytes = null, int? Parts = null, TimeSpan? MediaTime = null);
+/// <summary>提供媒体探测、下载、录制、预览输入和本地编辑。</summary>
+/// <param name="ffmpeg">选用的 FFmpeg 路径。需要 FFmpeg 的操作会检查该路径。</param>
+/// <param name="cacheDirectory">便携缓存目录，用于未发布的媒体输出。</param>
 public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
 {
     private const int CopyBuffer = 128 * 1024;
@@ -23,6 +32,10 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         AllowAutoRedirect = true
     }) { Timeout = Timeout.InfiniteTimeSpan };
 
+    /// <summary>验证并解析受支持的绝对媒体地址。</summary>
+    /// <param name="text">用户输入的地址，可包含首尾空白。</param>
+    /// <returns>已验证的媒体 URI。</returns>
+    /// <exception cref="ArgumentException">地址缺少主机、格式无效或使用不受支持的协议。</exception>
     public static Uri ParseSource(string text)
     {
         if (!Uri.TryCreate(text.Trim(), UriKind.Absolute, out Uri? uri) || string.IsNullOrWhiteSpace(uri.Host) ||
@@ -31,9 +44,15 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         return uri;
     }
 
+    /// <summary>尝试确认 HTTP 媒体是否具有固定长度。</summary>
+    /// <param name="source">待探测的媒体地址。</param>
+    /// <param name="token">用于中止探测的取消令牌。</param>
+    /// <param name="headers">可选的媒体请求头。</param>
+    /// <returns>能确认固定长度时返回 <see langword="true" />。无法确认或探测失败时返回 <see langword="false" />。</returns>
     public static async Task<bool> HasFixedPreviewDurationAsync(Uri source, CancellationToken token, MediaRequestHeaders? headers = null) =>
         (await InspectHttpMediaAsync(source, token, headers).ConfigureAwait(false))?.HasFixedDuration == true;
 
+    // 同一份 HTTP 探测结果用于判断预览长度和定位录制重连后的 HLS 分片。
     private sealed record HlsSegment(Uri Uri, decimal? Duration);
     private sealed record HttpMediaState(bool HasFixedDuration, long HlsSequence = 0, IReadOnlyList<HlsSegment>? HlsSegments = null,
         bool CanTrimHls = false);
@@ -126,6 +145,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
                 line != "#EXT-X-INDEPENDENT-SEGMENTS")
                 canTrim = false;
         }
+        // 主播放列表只有变体入口，需要继续读取变体清单才能判断是否结束。
         if (variant is not null)
         {
             HttpMediaState? child = await ReadHttpMediaAsync(variant, depth + 1, token, headers).ConfigureAwait(false);
@@ -142,6 +162,14 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         return await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
     }
 
+    /// <summary>保存普通 HTTP 文件，或使用 FFmpeg 拉取并封装流媒体。</summary>
+    /// <param name="source">待下载的媒体地址。</param>
+    /// <param name="directory">成品输出目录。</param>
+    /// <param name="progress">可选的任务进度接收方。</param>
+    /// <param name="token">用于停止任务的取消令牌。</param>
+    /// <param name="headers">可选的媒体请求头。</param>
+    /// <returns>成品文件的完整路径。</returns>
+    /// <exception cref="MediaPublishException">媒体已经下载完成，但未能移到成品路径。</exception>
     public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress, CancellationToken token,
         MediaRequestHeaders? headers = null)
     {
@@ -159,9 +187,21 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
             audioName: TimestampedName("audio", started)).ConfigureAwait(false);
     }
 
+    /// <summary>发布已下载完毕的 M4A 音频。</summary>
+    /// <param name="stagedFile">完整的 M4A 缓存文件。</param>
+    /// <param name="directory">成品输出目录。</param>
+    /// <param name="completedAt">用于生成文件名的完成时间。</param>
+    /// <returns>成品音频路径。同名时自动添加序号。</returns>
+    /// <exception cref="MediaPublishException">发布失败，异常提供缓存文件位置。</exception>
     public static string SaveDownloadedAudio(string stagedFile, string directory, DateTime completedAt) =>
         MediaOutput.Publish(stagedFile, directory, TimestampedName("audio", completedAt), ".m4a");
 
+    /// <summary>启动 FFmpeg，把网络媒体复制到供播放器读取的 MPEG-TS 管道。</summary>
+    /// <param name="source">预览源地址。</param>
+    /// <param name="token">用于停止供流进程的令牌。</param>
+    /// <param name="headers">可选的媒体请求头。</param>
+    /// <returns>预览流及其进程监控。调用方负责异步释放。</returns>
+    /// <exception cref="InvalidOperationException">FFmpeg 缺失或无法启动。</exception>
     public PreviewStream OpenNetworkPreview(Uri source, CancellationToken token, MediaRequestHeaders? headers = null)
     {
         var start = ToolProcess.CreateStartInfo(ToolProcess.RequireExecutable(ffmpeg, "FFmpeg"), cacheDirectory);
@@ -172,6 +212,18 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         return PreviewStream.Start(start, "FFmpeg 无法读取预览媒体流。", token);
     }
 
+    /// <summary>按编号读取一个录制目录内的分片并生成单个文件。</summary>
+    /// <param name="recordingDirectory">包含有效录制分片的目录。</param>
+    /// <param name="directory">成品输出目录。</param>
+    /// <param name="encoder">需要重新编码视频时选用的编码器。</param>
+    /// <param name="copy">是否直接复制选中的音视频轨道。启用时不应用重新编码设置。</param>
+    /// <param name="progress">可选的任务进度接收方。</param>
+    /// <param name="token">用于停止任务的取消令牌。</param>
+    /// <param name="deinterlace">重新编码视频时所用的去隔行模式。</param>
+    /// <param name="settings">可选的编码设置。省略时采用服务默认值。</param>
+    /// <returns>合并成品的完整路径。</returns>
+    /// <exception cref="InvalidDataException">分片序列无效。</exception>
+    /// <exception cref="MediaPublishException">合并成品未能移到输出目录。</exception>
     public async Task<string> MergeAsync(string recordingDirectory, string directory, VideoEncoder encoder, bool copy,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
         EncodingSettings? settings = null)
@@ -189,6 +241,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         string output = Path.Combine(Path.GetFullPath(directory), (name.Length == 0 ? "record" : name) + format.Extension);
         return await WriteEditedMediaAsync(output, input, codecs, format.Muxer, progress, token, WritePartsAsync).ConfigureAwait(false);
 
+        // 按分片编号连续写入管道，让 FFmpeg 把它们作为一条传输流读取。
         async Task WritePartsAsync(Stream pipe, CancellationToken ct)
         {
             foreach (FileInfo part in parts)
@@ -200,6 +253,17 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         }
     }
 
+    /// <summary>探测本地媒体并按轨道类型应用编码设置。</summary>
+    /// <param name="source">输入媒体的本地文件路径。</param>
+    /// <param name="directory">成品输出目录。</param>
+    /// <param name="encoder">需要重新编码视频时选用的编码器。</param>
+    /// <param name="progress">可选的任务进度接收方。</param>
+    /// <param name="token">用于停止任务的取消令牌。</param>
+    /// <param name="deinterlace">重新编码视频时所用的去隔行模式。</param>
+    /// <param name="settings">可选的编码设置。省略时采用服务默认值。</param>
+    /// <returns>转码成品的完整路径。</returns>
+    /// <exception cref="FileNotFoundException">输入文件不存在。</exception>
+    /// <exception cref="MediaPublishException">转码成品未能移到输出目录。</exception>
     public async Task<string> TranscodeAsync(string source, string directory, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
         EncodingSettings? settings = null)
@@ -223,6 +287,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         KeepAudioBitrate = false
     };
 
+    // 只探测轨道信息，不生成媒体，这样可为纯音频和纯视频分别选用编码参数。
     private async Task<SourceEncodingInfo> ProbeEncodingAsync(string[] input, CancellationToken token,
         Func<Stream, CancellationToken, Task>? writeInput = null)
     {
@@ -270,6 +335,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         }
     }
 
+    // FFmpeg 先写便携缓存。任务仍有效且文件完整写出后才移到成品路径。
     private async Task<string> WriteMediaAsync(string output, string[] input, string[] codecs, string format,
         IProgress<MediaProgress>? progress, CancellationToken token,
         Func<Stream, CancellationToken, Task>? writeInput = null, string? audioName = null)
@@ -397,6 +463,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     private static string TimestampedName(string prefix, DateTime started) =>
         FormattableString.Invariant($"{prefix}_{started:yyyyMMdd_HHmmss}");
 
+    // 用原生创建操作抢占目录名，避免多个实例同时录制时共用一个分片目录。
     private static string CreateRecordingDirectory(string directory, DateTime startedAt)
     {
         directory = Directory.CreateDirectory(directory).FullName;

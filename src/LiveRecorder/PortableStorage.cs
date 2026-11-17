@@ -5,12 +5,14 @@ using Windows.Storage;
 
 namespace LiveRecorder;
 
+/// <summary>统一提供工具、缓存、日志和配置的便携存储位置。</summary>
 internal static class PortableStorage
 {
     public static string ToolsDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "tools");
     public static string CacheDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "cache");
     public static string LogsDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "logs");
     public static string ConfigDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "config");
+    // 成品默认进入当前用户的下载目录。内部工作文件仍位于程序目录。
     public static string DefaultOutputDirectory() => Path.Combine(DownloadsDirectory(), "LiveRecorder");
     public static PortableConfiguration Configuration { get; } = new(ConfigDirectory);
     public static PortableLog Log { get; } = new(LogsDirectory);
@@ -19,6 +21,7 @@ internal static class PortableStorage
     public static void Initialize()
     {
         InitializationError = null;
+        // 各目录单独初始化，缓存或日志目录故障时仍可载入有效配置。
         TryInitialize(() => Configuration.Load(ToolsDirectory));
         TryInitialize(() => Directory.CreateDirectory(ToolsDirectory));
         TryInitialize(() => Directory.CreateDirectory(CacheDirectory));
@@ -39,6 +42,9 @@ internal static class PortableStorage
         }
     }
 
+    /// <summary>获取与当前用户匹配的系统下载目录。</summary>
+    /// <returns>系统报告的下载路径。无法获取时使用用户目录下的 Downloads 子目录。</returns>
+    /// <remarks>优先使用 WinRT 用户路径，必要时回退到 Windows Shell。</remarks>
     public static string DownloadsDirectory()
     {
         string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);

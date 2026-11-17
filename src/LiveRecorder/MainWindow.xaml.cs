@@ -8,8 +8,12 @@ using Microsoft.Windows.Storage.Pickers;
 
 namespace LiveRecorder;
 
+/// <summary>调度媒体任务并管理主窗口的进度、结果和关闭流程。</summary>
 public sealed partial class MainWindow : Window
 {
+    private static int _nextLogWindowId;
+    // 窗口编号在进程内递增，与 PID 组合后可区分同一日志目录中的事件。
+    private readonly int _logWindowId = Interlocked.Increment(ref _nextLogWindowId);
     private readonly nint _handle;
     private MediaService _media;
     private CancellationTokenSource? _operation;
@@ -35,13 +39,15 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) =>
         {
             SaveMediaSettings();
-            PortableStorage.Log.Write(LogLevel.Information, "Application", "Live Recorder 已退出。");
+            WriteWindowLog(LogLevel.Information, "Window", "窗口已关闭。");
             PortableStorage.Log.FlushAsync().GetAwaiter().GetResult();
         };
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
-        WindowAspect.Apply(AppWindow, _handle);
+        if (!WindowAspect.Apply(AppWindow, _handle))
+            WriteWindowLog(LogLevel.Warning, "Window", "无法启用 16:9 拖动约束，窗口将使用系统调整大小。");
         AppWindow.Closing += Window_Closing;
+        WriteWindowLog(LogLevel.Information, "Window", "窗口已打开。");
     }
 
     private async void Download_Click(object sender, RoutedEventArgs e) => await RunAsync("下载中", async token =>
@@ -140,6 +146,7 @@ public sealed partial class MainWindow : Window
         return (await picker.PickSingleFileAsync())?.Path;
     }
 
+    // 重连事件同步到界面。旧任务的迟到事件只写日志，避免覆盖新任务状态。
     private IProgress<RecordingEvent> RecordingEvents(CancellationToken token) => new Progress<RecordingEvent>(update =>
     {
         string title = update.Recovered ? "录制已恢复" : "等待重连";
@@ -148,7 +155,7 @@ public sealed partial class MainWindow : Window
         if (_operation?.Token == token && !token.IsCancellationRequested)
             SetStatus(title, detail, level);
         else
-            PortableStorage.Log.Write(level, "Recording", $"{title} · {detail}");
+            WriteWindowLog(level, "Recording", $"{title} · {detail}");
     });
 
     private async Task FinishRecordingAsync(RecordingResult recording, string directory, MediaSettings settings)
@@ -197,12 +204,14 @@ public sealed partial class MainWindow : Window
             return;
 
         _operation!.Dispose();
+        // 停止录制后仍可合并已保存的分片，因此合并阶段使用新的取消令牌。
         _operation = new CancellationTokenSource();
         CancellationToken token = _operation.Token;
         StartStage("合并中");
         int succeeded = 0;
         int failed = 0;
         var results = new List<string>(folders.Count);
+        // 将每次断流之间的录制独立合并，逐目录保留成功、失败和跳过结果。
         foreach (RecordingFolder folder in folders)
         {
             string name = Path.GetFileName(folder.Directory);
@@ -221,7 +230,7 @@ public sealed partial class MainWindow : Window
                 PlayResultButton.IsEnabled = true;
                 succeeded++;
                 results.Add($"{name} · 已合并为 {Path.GetFileName(output)}");
-                PortableStorage.Log.Write(LogLevel.Information, "Recording", $"已合并 {folder.Directory} → {output}");
+                WriteWindowLog(LogLevel.Information, "Recording", $"已合并 {folder.Directory} → {output}");
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -231,7 +240,7 @@ public sealed partial class MainWindow : Window
             {
                 failed++;
                 results.Add($"{name} · 合并失败，分片已保留。{ex.Message}");
-                PortableStorage.Log.Write(LogLevel.Error, "Recording", $"合并失败，已保留分片。{folder.Directory}", ex);
+                WriteWindowLog(LogLevel.Error, "Recording", $"合并失败，已保留分片。{folder.Directory}", ex);
             }
         }
         string result = $"已合并 {succeeded}/{folders.Count} 个录制文件夹。";
@@ -242,6 +251,10 @@ public sealed partial class MainWindow : Window
             failed > 0 ? LogLevel.Warning : LogLevel.Information);
     }
 
+    /// <summary>在窗口空闲时执行一个前台任务，并统一处理状态反馈。</summary>
+    /// <param name="title">任务开始时显示的状态标题。</param>
+    /// <param name="action">接收取消令牌的任务回调。</param>
+    /// <returns>前台任务及其界面恢复完成的任务。若已有任务在执行，则直接返回。</returns>
     private async Task RunAsync(string title, Func<CancellationToken, Task> action)
     {
         if (_operation is not null)
@@ -279,6 +292,7 @@ public sealed partial class MainWindow : Window
         SetStatus(title, "正在读取媒体…");
     }
 
+    // 后台进度先合并到共享状态，再定时刷新界面，避免每次回调都排队更新控件。
     private IProgress<MediaProgress> CreateProgress()
     {
         StopProgressUpdates();
@@ -359,6 +373,7 @@ public sealed partial class MainWindow : Window
         _operation.Cancel();
     }
 
+    // 有活动任务时延后关窗，等待录制分片、对话框和预览资源清理。
     private async void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         if (_operation is null && _toolVersionsDialog is null && _preview is null && _previewCleanup.IsCompleted)
@@ -409,8 +424,11 @@ public sealed partial class MainWindow : Window
     {
         StatusTitle.Text = title;
         StatusDetail.Text = detail;
-        PortableStorage.Log.Write(level, "Task", $"{title} · {detail}", error);
+        WriteWindowLog(level, "Task", $"{title} · {detail}", error);
     }
+
+    private void WriteWindowLog(LogLevel level, string category, string message, Exception? error = null) =>
+        PortableStorage.Log.Write(level, category, message, error, _logWindowId);
 
     private void ShowOutput(string title, string file)
     {

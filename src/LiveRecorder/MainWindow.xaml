@@ -13,6 +13,7 @@
                 <Setter Property="CornerRadius" Value="12" />
             </Style>
         </Grid.Resources>
+        <!-- 左侧集中设置，右侧预览和操作区使用两倍列宽。 -->
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="*" />
             <ColumnDefinition Width="2*" />
@@ -22,6 +23,7 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
+        <!-- 工具安装与全局选项对两种媒体模式共用。 -->
         <MenuBar x:Name="ToolsMenu" Grid.ColumnSpan="2">
             <MenuBarItem Title="工具">
                 <MenuFlyoutItem Text="安装 / 升级 FFmpeg…" Click="UpgradeFfmpeg_Click" />
@@ -36,6 +38,7 @@
             </MenuBarItem>
         </MenuBar>
 
+        <!-- 左栏只切换输入与模式专属设置，右栏控件保持共用。 -->
         <Border Grid.Row="1" Style="{StaticResource Card}">
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
                 <StackPanel Padding="20" Spacing="16">
@@ -70,6 +73,7 @@
             </ScrollViewer>
         </Border>
 
+        <!-- 右栏让预览占主要高度，下方放操作按钮和任务状态。 -->
         <Grid Grid.Row="1" Grid.Column="1" RowSpacing="16">
             <Grid.RowDefinitions>
                 <RowDefinition Height="3*" />
@@ -111,6 +115,7 @@
                                            TextWrapping="Wrap" TextAlignment="Center" AutomationProperties.LiveSetting="Polite" />
                             </StackPanel>
                         </Grid>
+                        <!-- 单行播放控件依次放置播放和音量、进度条及播放时间。 -->
                         <Grid x:Name="PreviewTransport" Grid.Row="1" Background="#292929"
                               RequestedTheme="Dark" Padding="6,2,12,2" ColumnSpacing="7" Visibility="Collapsed">
                             <Grid.ColumnDefinitions>
@@ -226,6 +231,7 @@
                             <TextBlock x:Name="StatusTitle" Text="就绪" Style="{StaticResource BodyStrongTextBlockStyle}"
                                        TextTrimming="CharacterEllipsis" AutomationProperties.LiveSetting="Polite" />
                             <ProgressBar x:Name="TaskProgress" Grid.Row="1" Minimum="0" Maximum="100" Value="0" Visibility="Collapsed" />
+                            <!-- 长错误或逐目录合并结果可滚动查看和复制。 -->
                             <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
                                 <TextBlock x:Name="StatusDetail" TextWrapping="Wrap" IsTextSelectionEnabled="True"
                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

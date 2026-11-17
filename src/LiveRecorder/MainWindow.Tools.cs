@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 
 namespace LiveRecorder;
 
+// 连接工具菜单、版本管理对话框和媒体服务。
 public sealed partial class MainWindow
 {
     private readonly ToolUpdater _toolUpdater = new(PortableStorage.ToolsDirectory, PortableStorage.CacheDirectory,
@@ -10,6 +11,9 @@ public sealed partial class MainWindow
     private string? _ffmpegPath;
     private ToolVersionsDialog? _toolVersionsDialog;
 
+    /// <summary>使用同一份安装快照刷新指定媒体服务。</summary>
+    /// <param name="tool">需要重新绑定的工具。</param>
+    /// <param name="installed">同时供版本显示和后续媒体任务使用的安装快照。</param>
     private void ReloadMediaTool(MediaTool tool, ToolInstallation installed)
     {
         if (tool == MediaTool.Ffmpeg)
@@ -39,7 +43,7 @@ public sealed partial class MainWindow
     {
         if (_operation is not null || _toolVersionsDialog is not null || _closeWhenIdle)
             return;
-        var dialog = new ToolVersionsDialog(_toolUpdater, ReloadMediaTool, StopPreviewAsync)
+        var dialog = new ToolVersionsDialog(_toolUpdater, ReloadMediaTool, StopPreviewAsync, _logWindowId)
         {
             XamlRoot = ((FrameworkElement)Content).XamlRoot
         };
@@ -61,6 +65,7 @@ public sealed partial class MainWindow
         {
             result = await _toolUpdater.UpdateAsync(tool, CreateProgress(), token, () => DispatcherQueue.TryEnqueue(() =>
             {
+                // 排队到界面线程的回退提示可能晚于任务结果，此时保留最终状态。
                 if (!finished && !token.IsCancellationRequested)
                     SetStatus($"正在检查 {name}", "GitHub API 查询失败（HTTP 403），正在使用官方发布页查询。", LogLevel.Warning);
             }));

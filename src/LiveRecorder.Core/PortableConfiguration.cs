@@ -5,11 +5,17 @@ namespace LiveRecorder.Core;
 
 public enum LogLevel { Debug = 1, Information = 2, Warning = 3, Error = 4, None = 6 }
 
+/// <summary>定义日志过滤与轮转的设置。</summary>
+/// <param name="Level">日志最低级别。设为 None 时关闭日志。</param>
+/// <param name="FileSizeMb">每个日志文件的大小上限，单位为十进制 MB。</param>
+/// <param name="FileCount">共享日志目录保留的文件数上限。</param>
 public sealed record LoggingSettings([property: JsonConverter(typeof(LogLevelConverter))] LogLevel Level = LogLevel.Information,
     int FileSizeMb = 10, int FileCount = 10);
 
+// 兼容旧版的日志级别字符串和数值，同时按当前格式写回。
 internal sealed class LogLevelConverter : JsonConverter<LogLevel>
 {
+    /// <inheritdoc />
     public override LogLevel Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         if (reader.TokenType == JsonTokenType.String)
@@ -29,6 +35,7 @@ internal sealed class LogLevelConverter : JsonConverter<LogLevel>
         throw new JsonException("日志级别应为字符串或整数。");
     }
 
+    /// <inheritdoc />
     public override void Write(Utf8JsonWriter writer, LogLevel value, JsonSerializerOptions options) =>
         writer.WriteStringValue(JsonNamingPolicy.CamelCase.ConvertName(value.ToString()));
 
@@ -58,6 +65,8 @@ public sealed record AppSettings
     public ToolSettings Tools { get; init; } = new();
 }
 
+/// <summary>读取、迁移和更新便携目录中的 settings.json。</summary>
+/// <remarks>通过命名互斥锁协调不同实例，并在成功保存后更新内存快照。</remarks>
 public sealed class PortableConfiguration : IDisposable
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
@@ -70,6 +79,8 @@ public sealed class PortableConfiguration : IDisposable
     private readonly Mutex _mutex;
     private AppSettings _current = new();
 
+    /// <summary>创建针对指定便携目录的配置存储。</summary>
+    /// <param name="directory">包含或将要保存 settings.json 的目录。</param>
     public PortableConfiguration(string directory)
     {
         _directory = directory;
@@ -77,9 +88,15 @@ public sealed class PortableConfiguration : IDisposable
         _mutex = PortableFileMutex.Create(_path);
     }
 
+    /// <summary>本实例最近成功载入或保存的配置快照。</summary>
     public AppSettings Current => Volatile.Read(ref _current);
+    /// <summary>本实例最近一次成功恢复时备份的配置路径。</summary>
+    /// <value>尚未成功恢复时为 <see langword="null" />。</value>
     public string? RecoveryBackup { get; private set; }
 
+    /// <summary>载入配置，并在缺失或损坏时生成可用配置。</summary>
+    /// <param name="toolsDirectory">便携工具目录，用于查找旧版保存的版本偏好。</param>
+    /// <remarks>读取不到有效配置时尝试迁移旧偏好。损坏配置在替换时保留备份。</remarks>
     public void Load(string toolsDirectory)
     {
         PortableFileMutex.Enter(_mutex);
@@ -100,11 +117,15 @@ public sealed class PortableConfiguration : IDisposable
         finally { _mutex.ReleaseMutex(); }
     }
 
+    /// <summary>在跨进程锁内读取、修改并按需保存最新配置。</summary>
+    /// <param name="update">根据当前配置生成新配置的同步委托。</param>
+    /// <remarks>委托在持锁期间运行，应尽快返回。若磁盘配置损坏，使用本实例的配置快照作为修改基础。</remarks>
     public void Update(Func<AppSettings, AppSettings> update)
     {
         PortableFileMutex.Enter(_mutex);
         try
         {
+            // 持锁重新读取磁盘状态，保留其他实例已经保存的设置。
             AppSettings settings = ReadForRecovery(out string? backup) ?? Current;
             AppSettings next = Normalize(update(settings));
             if (settings != next || backup is not null || !File.Exists(_path))
@@ -159,6 +180,7 @@ public sealed class PortableConfiguration : IDisposable
                 File.Move(pending, _path, overwrite: true);
             else
             {
+                // 用新配置原位替换，同时留下损坏原件供排查。
                 File.Replace(pending, _path, backup);
                 RecoveryBackup = backup;
             }

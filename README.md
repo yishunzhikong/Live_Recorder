@@ -1,6 +1,6 @@
 # Live Recorder
 
-Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 媒体下载和录制工具。v1.2.0 提供「直播录制」和「yt-dlp」两种模式，支持 Windows 10 2004（19041）及以上版本和 Windows 11 的 x64 系统。
+Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 媒体下载和录制工具。提供「直播录制」和「yt-dlp」两种模式，支持 Windows 10 2004（19041）及以上版本和 Windows 11 的 x64 系统。
 
 ## 运行发布版
 
@@ -41,11 +41,11 @@ Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 媒�
 
 程序目录下的 `tools\ffmpeg`、`tools\yt-dlp` 和 `tools\deno` 按版本存放工具。FFmpeg 和 yt-dlp 安装时会核对 SHA-256、下载大小和工具实际报告的版本。临时下载文件和工具运行缓存使用程序目录下的 `cache`。移动程序时可一并移动 `tools`，继续使用已经安装的版本。
 
-通过「工具 → 工具版本管理」可在应用内获取 FFmpeg 和 yt-dlp 的版本列表，从下拉框选择要安装的版本。点击「更多版本」可加载较早的发行版。已安装版本可以删除，也可以设为后续任务使用的版本。点击「自动选择」或删除正在使用的版本后，程序会使用剩余版本中版本号最高的一项。安装旧版需要上游提供对应的 Windows 文件和 SHA-256。
+打开「工具 → 工具版本管理」时只显示当前工具的本地安装状态。要查看可安装版本，选择 FFmpeg 或 yt-dlp 后点击「刷新」，再从下拉框选择要安装的版本。点击「更多版本」可加载较早的发行版。已安装版本可以删除，也可以设为后续任务使用的版本。点击「自动选择」或删除正在使用的版本后，程序会使用剩余版本中版本号最高的一项。安装旧版需要上游提供对应的 Windows 文件和 SHA-256。
 
 ## 日志和配置
 
-程序将日志写入同目录的 `logs`，文件名使用 UTC 时间。日志每行包含时间、级别、类别和消息，默认记录 Info 及以上，每个文件最多 10 MB，保留最新 10 个文件。「选项 → 日志设置」可选择 Debug、Info、Warning、Error 或关闭日志，也可修改单个文件大小（1–100 MB）和保留数量（1–100 个），保存后即时生效。
+程序将日志写入同目录的 `logs`，文件名使用 UTC 时间。每条日志记录时间、进程 ID（`[PID=…]`）、级别、类别和消息。来自窗口的事件还会记录该进程内的窗口编号（`[Window=…]`），可用这两个字段筛选。多个实例共用日志目录，默认记录 Info 及以上，每个文件最多 10 MB，整个目录默认保留最新 10 个文件。「选项 → 日志设置」可选择 Debug、Info、Warning、Error 或关闭日志，也可修改单个文件大小（1–100 MB）和保留数量（1–100 个），保存后在当前实例生效。
 
 日志设置、媒体设置和手动选定的工具版本保存在同目录的 `config\settings.json`。移动便携版时，可一并移动 `config` 和 `tools`。
 
@@ -61,12 +61,12 @@ dotnet build src/LiveRecorder/LiveRecorder.csproj -c Release
 
 ## 发布新版
 
-下方以 v1.2.0 为例。使用新的输出目录打包，目录名和 ZIP 文件名中的版本号应改为本次版本。
+下方以 v1.2.1 为例。使用新的输出目录打包，目录名和 ZIP 文件名中的版本号应改为本次版本。
 
 ```powershell
-dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-v1.2.0-win-x64
-Copy-Item -LiteralPath README.md -Destination artifacts/LiveRecorder-v1.2.0-win-x64/
-tar.exe -a -cf artifacts/LiveRecorder-v1.2.0-win-x64.zip --exclude='*.pdb' -C artifacts LiveRecorder-v1.2.0-win-x64
+dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-v1.2.1-win-x64
+Copy-Item -LiteralPath README.md -Destination artifacts/LiveRecorder-v1.2.1-win-x64/
+tar.exe -a -cf artifacts/LiveRecorder-v1.2.1-win-x64.zip --exclude='*.pdb' -C artifacts LiveRecorder-v1.2.1-win-x64
 ```
 
 发布目录包含应用以及 .NET 和 Windows App SDK 运行时。目标机器还需 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。

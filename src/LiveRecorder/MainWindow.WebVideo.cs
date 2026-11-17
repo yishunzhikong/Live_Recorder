@@ -5,12 +5,14 @@ using Windows.ApplicationModel.DataTransfer;
 
 namespace LiveRecorder;
 
+// 管理直播和 yt-dlp 模式切换、网页格式列表以及音频下载。
 public sealed partial class MainWindow
 {
     private enum AppMode { Live, WebVideo }
 
     private WebVideoAnalyzer _webAnalyzer;
     private AppMode _mode;
+    // 两个模式分别保留状态区内容，切换时恢复对应的提示。
     private readonly (string Title, string Detail)[] _modeStatus =
     [
         ("就绪", "粘贴媒体链接，或选择要处理的本地文件。"),
@@ -35,6 +37,9 @@ public sealed partial class MainWindow
         await stopped;
     }
 
+    /// <summary>获取当前模式下共用媒体操作使用的地址。</summary>
+    /// <returns>直播输入栏的地址或 yt-dlp 所选格式的直链。</returns>
+    /// <exception cref="ArgumentException">地址无效，或尚未分析并选择网页格式。</exception>
     private Uri SelectedMediaSource() => _mode switch
     {
         AppMode.Live => MediaService.ParseSource(SourceBox.Text),
@@ -50,6 +55,7 @@ public sealed partial class MainWindow
     private async Task<string> DownloadWebAudioAsync(WebVideoLink audio, string directory, CancellationToken token)
     {
         DirectoryInfo work = Directory.CreateDirectory(Path.Combine(PortableStorage.CacheDirectory, $"audio-{Guid.NewGuid():N}"));
+        // 直接下载的音频先留在缓存。输出失败时保留已完成的文件供恢复。
         bool preserveDownload = false;
         try
         {
@@ -62,12 +68,12 @@ public sealed partial class MainWindow
         finally { if (!preserveDownload) DeleteWebAudioFiles(work); }
     }
 
-    private static void DeleteWebAudioFiles(DirectoryInfo folder)
+    private void DeleteWebAudioFiles(DirectoryInfo folder)
     {
         try { folder.Delete(recursive: true); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            PortableStorage.Log.Write(LogLevel.Warning, "Download", "无法清理音频缓存。", ex);
+            WriteWindowLog(LogLevel.Warning, "Download", "无法清理音频缓存。", ex);
         }
     }
 
@@ -75,6 +81,7 @@ public sealed partial class MainWindow
         ? "在左侧选择解析出的媒体直链，或打开本地视频。"
         : PreviewIdle;
 
+    // 网页输入变化后清空旧解析结果，避免套用上一个页面的直链。
     private void WebSource_TextChanged(object sender, TextChangedEventArgs e)
     {
         if (WebFormatBox is null)

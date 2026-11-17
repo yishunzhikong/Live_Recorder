@@ -19,6 +19,7 @@ public sealed record ToolVersion(string Tag, bool InUse)
 public sealed record ToolInstallation(string? ActiveTag, string? ActiveExecutable, IReadOnlyList<ToolVersion> Versions);
 public sealed record ToolReleasePage(IReadOnlyList<string> Tags, int? NextPage, bool UsedWebFallback);
 
+/// <summary>查询、校验并管理便携目录中的媒体工具版本。</summary>
 public sealed class ToolUpdater
 {
     private static readonly HttpClient Network = new(new HttpClientHandler { UseCookies = false })
@@ -41,6 +42,11 @@ public sealed class ToolUpdater
     private sealed record InstalledTool(string Tag, Version Version, string Path);
     private sealed record ReleaseAsset(string Tag, Version Version, string Name, Uri Address, string Sha256, long? Size);
 
+    /// <summary>创建针对指定便携目录的工具管理器。</summary>
+    /// <param name="directory">工具安装根目录。</param>
+    /// <param name="cacheDirectory">下载和安装暂存根目录。</param>
+    /// <param name="http">可选的 HTTP 客户端。省略时使用内置客户端。</param>
+    /// <param name="configuration">可选的共享便携配置。省略时从工具目录的同级配置目录载入。</param>
     public ToolUpdater(string directory, string cacheDirectory, HttpClient? http = null, PortableConfiguration? configuration = null)
     {
         _directory = directory;
@@ -57,6 +63,9 @@ public sealed class ToolUpdater
 
     public IReadOnlyList<ToolVersion> GetInstalledVersions(MediaTool kind) => GetInstallation(kind).Versions;
 
+    /// <summary>一次扫描同时生成已装版本列表、活动标签和可执行文件路径。</summary>
+    /// <param name="kind">需要操作的媒体工具。</param>
+    /// <returns>安装状态快照。首选版本不可用时，活动项为最高的可用版本。</returns>
     public ToolInstallation GetInstallation(MediaTool kind)
     {
         Tool tool = Definition(kind);
@@ -68,6 +77,13 @@ public sealed class ToolUpdater
             .Select(item => new ToolVersion(item.Version.Tag, item.Version == active) { IsUsable = item.IsUsable }).ToArray());
     }
 
+    /// <summary>验证指定版本可以运行并将它保存为首选版本。</summary>
+    /// <param name="kind">需要操作的媒体工具。</param>
+    /// <param name="tag">本地已安装版本的标签。</param>
+    /// <param name="token">用于取消本次请求的令牌。</param>
+    /// <returns>版本验证和偏好保存完成的任务。</returns>
+    /// <exception cref="InvalidOperationException">指定版本未安装。</exception>
+    /// <exception cref="InvalidDataException">可执行文件报告的版本与预期不符或退出异常。</exception>
     public async Task SelectVersionAsync(MediaTool kind, string tag, CancellationToken token)
     {
         Tool tool = Definition(kind);
@@ -77,6 +93,11 @@ public sealed class ToolUpdater
         _configuration.Update(settings => WithPreference(settings, tool, installed.Tag));
     }
 
+    /// <summary>删除指定本地版本，并在必要时清除该版本的首选状态。</summary>
+    /// <param name="kind">需要操作的媒体工具。</param>
+    /// <param name="tag">要删除的本地版本标签。</param>
+    /// <exception cref="InvalidOperationException">指定版本未安装。</exception>
+    /// <remarks>保存偏好失败时尝试恢复已移走的版本目录。</remarks>
     public void DeleteVersion(MediaTool kind, string tag)
     {
         Tool tool = Definition(kind);
@@ -88,6 +109,7 @@ public sealed class ToolUpdater
         PortableFileMutex.Enter(mutex);
         try
         {
+            // 先移到临时目录。清除版本偏好失败时仍可恢复原安装。
             string removed = Path.Combine(staging, "removed");
             Directory.Move(directory, removed);
             cleanStaging = false;
@@ -117,6 +139,15 @@ public sealed class ToolUpdater
 
     public string DenoPath => Path.Combine(_directory, "deno", DenoVersion, "deno.exe");
 
+    /// <summary>查询一页上游正式发行版本。</summary>
+    /// <param name="kind">需要操作的媒体工具。</param>
+    /// <param name="page">从 1 开始的页码。</param>
+    /// <param name="useWeb">是否直接查询官方网页，例如继续此前的网页分页。</param>
+    /// <param name="token">用于取消本次请求的令牌。</param>
+    /// <param name="onWebFallback">可选回调，在 API 返回 HTTP 403 并切换到官方发布页时调用。</param>
+    /// <returns>本页标签、下一页位置及是否使用官网发布页。</returns>
+    /// <exception cref="ArgumentOutOfRangeException">页码小于 1。</exception>
+    /// <remarks>API 被拒绝并改用网页时，从网页第 1 页开始。</remarks>
     public async Task<ToolReleasePage> GetReleasePageAsync(MediaTool kind, int page, bool useWeb,
         CancellationToken token, Action? onWebFallback = null)
     {
@@ -155,6 +186,7 @@ public sealed class ToolUpdater
         return new ToolReleasePage(tags, hasNext ? page + 1 : null, false);
     }
 
+    // 只有 GitHub API 返回 HTTP 403 时才改查官方发布页。
     private static async Task<(T Value, bool UsedWebFallback)> ReadWithWebFallbackAsync<T>(
         Func<CancellationToken, Task<T>> readApi, Func<CancellationToken, Task<T>> readWeb,
         CancellationToken token, Action? onWebFallback)
@@ -215,10 +247,24 @@ public sealed class ToolUpdater
         return new ToolReleasePage(tags, hasNext ? page + 1 : null, true);
     }
 
+    /// <summary>查询并按需安装上游最新稳定版。</summary>
+    /// <param name="kind">需要操作的媒体工具。</param>
+    /// <param name="progress">可选的下载进度接收方。</param>
+    /// <param name="token">用于取消本次请求的令牌。</param>
+    /// <param name="onWebFallback">可选回调，在 API 返回 HTTP 403 并切换到官方发布页时调用。</param>
+    /// <returns>更新结果，包含操作前后的版本、是否实际安装以及查询来源。</returns>
     public Task<ToolUpdateResult> UpdateAsync(MediaTool kind, IProgress<MediaProgress>? progress,
         CancellationToken token, Action? onWebFallback = null) =>
         InstallAsync(kind, null, progress, token, onWebFallback);
 
+    /// <summary>按标签查询并安装指定的正式发行版本。</summary>
+    /// <param name="kind">需要操作的媒体工具。</param>
+    /// <param name="tag">由点分隔的数字版本标签。</param>
+    /// <param name="progress">可选的下载进度接收方。</param>
+    /// <param name="token">用于取消本次请求的令牌。</param>
+    /// <param name="onWebFallback">可选回调，在 API 返回 HTTP 403 并切换到官方发布页时调用。</param>
+    /// <returns>安装结果。指定版本已有效安装时可直接复用。</returns>
+    /// <exception cref="ArgumentException">标签不是受支持的正式版本号格式。</exception>
     public Task<ToolUpdateResult> InstallVersionAsync(MediaTool kind, string tag, IProgress<MediaProgress>? progress,
         CancellationToken token, Action? onWebFallback = null)
     {
@@ -228,6 +274,7 @@ public sealed class ToolUpdater
         return InstallAsync(kind, tag, progress, token, onWebFallback);
     }
 
+    // 先在临时目录下载、验证摘要并运行版本检查，完成后才安装到版本目录。
     private async Task<ToolUpdateResult> InstallAsync(MediaTool kind, string? requestedTag, IProgress<MediaProgress>? progress,
         CancellationToken token, Action? onWebFallback)
     {
@@ -285,6 +332,7 @@ public sealed class ToolUpdater
         }
     }
 
+    // Deno 是 yt-dlp 的配套运行时，使用程序指定的版本和摘要。
     private async Task InstallDenoAsync(IProgress<MediaProgress>? progress, CancellationToken token)
     {
         string executable = DenoPath;
@@ -315,6 +363,7 @@ public sealed class ToolUpdater
     private string CreateStagingDirectory() =>
         Directory.CreateDirectory(Path.Combine(_cacheDirectory, $"update-{Guid.NewGuid():N}")).FullName;
 
+    // 按目标版本目录加锁。替换失败时尽量恢复旧目录，恢复失败则保留备份。
     private void CommitInstallation(string staging, string target, CancellationToken token)
     {
         using Mutex mutex = PortableFileMutex.Create(target);
@@ -602,6 +651,7 @@ public sealed class ToolUpdater
         return installed.OrderByDescending(version => version.Version).ThenBy(version => version.Tag, StringComparer.Ordinal).ToArray();
     }
 
+    // 枚举时只检查 Windows 可执行文件结构。安装或手动选用时再运行版本验证。
     private static bool IsWindowsExecutable(string path)
     {
         try

@@ -10,6 +10,7 @@ using LogLevel = LiveRecorder.Core.LogLevel;
 
 namespace LiveRecorder;
 
+// 管理 LibVLC 预览、播放控件，以及直接播放和子进程供流之间的切换。
 public sealed partial class MainWindow
 {
     private const string PreviewIdle = "选择预览链接或打开本地视频。";
@@ -22,6 +23,7 @@ public sealed partial class MainWindow
     private bool _updatingSeek;
     private bool _draggingSeek;
 
+    // 每次预览独立持有播放器、输入和取消令牌，便于忽略旧会话的延迟回调。
     private sealed class PreviewSession(Uri? networkSource, WebVideoLink? webFormat)
     {
         public Uri? NetworkSource { get; } = networkSource;
@@ -73,7 +75,7 @@ public sealed partial class MainWindow
                 PreviewMessage.Text = ex.Message;
             else
                 SetStatus("无法打开预览链接", ex.Message, LogLevel.Warning);
-            PortableStorage.Log.Write(LogLevel.Debug, "Playback", "预览地址校验失败。", ex);
+            WriteWindowLog(LogLevel.Debug, "Playback", "预览地址校验失败。", ex);
             return;
         }
 
@@ -135,12 +137,20 @@ public sealed partial class MainWindow
         return new Media(vlc, file, FromType.FromPath);
     });
 
+    /// <summary>创建预览会话，并在旧会话清理后重新使用视频区域。</summary>
+    /// <param name="title">预览区域显示的名称。</param>
+    /// <param name="networkSource">用于判断网络协议和总时长的源地址。本地或管道音频可为空。</param>
+    /// <param name="loadMedia">使用 LibVLC 和新会话构造媒体对象的回调。</param>
+    /// <param name="format">可选的 yt-dlp 格式与请求头信息。</param>
+    /// <param name="fallback">可选的操作，在当前媒体尚未开始播放便失败时执行。</param>
+    /// <returns>完成启动处理的任务。任务返回时播放器可能仍在缓冲。</returns>
     private async Task OpenPreviewAsync(string title, Uri? networkSource, Func<LibVLC, PreviewSession, Media> loadMedia,
         WebVideoLink? format = null, Func<Task>? fallback = null)
     {
         if (_closeWhenIdle)
             return;
 
+        // 在复用视频区域前先关闭旧会话。新会话会等待旧资源释放。
         Task previous = StopPreviewAsync();
         var session = new PreviewSession(networkSource, format)
         {
@@ -149,7 +159,7 @@ public sealed partial class MainWindow
         };
         _preview = session;
         string source = format is not null ? "yt-dlp" : networkSource?.Scheme ?? "本地文件";
-        PortableStorage.Log.Write(LogLevel.Information, "Playback", $"正在打开预览。来源 {source}。");
+        WriteWindowLog(LogLevel.Information, "Playback", $"正在打开预览。来源 {source}。");
         PreviewName.Text = title;
         PreviewMessage.Text = "正在打开媒体…";
         StopPreviewButton.Visibility = Visibility.Visible;
@@ -171,7 +181,7 @@ public sealed partial class MainWindow
             _vlc ??= new LibVLC([.. display, "--ignore-config", "--no-plugins-cache", "--no-video-title-show"]);
             PreviewPlayer.Clear();
             Media media = session.Media = loadMedia(_vlc, session);
-            PortableStorage.Log.Write(LogLevel.Debug, "Playback", session.Producer is null ? "使用 VLC 直接读取媒体。" : "使用管道为 VLC 提供媒体。");
+            WriteWindowLog(LogLevel.Debug, "Playback", session.Producer is null ? "使用 VLC 直接读取媒体。" : "使用管道为 VLC 提供媒体。");
             var player = new MediaPlayer(_vlc);
             session.Player = player;
             player.Playing += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewPlaying(session, player));
@@ -186,10 +196,12 @@ public sealed partial class MainWindow
                 _ = ObserveStreamAsync(session, producer.Completion);
             else if (networkSource is not null && format?.IsLive != true)
                 _ = CheckPreviewDurationAsync(session, networkSource, token);
+            // 播放请求成功后仍需监控 VLC 是否真正进入播放状态。
             _ = WatchPreviewStartupAsync(session, token);
         }
     }
 
+    // HTTP 直播可能报告有限的缓存窗口。确认媒体有固定长度后才显示总时长。
     private async Task CheckPreviewDurationAsync(PreviewSession session, Uri source, CancellationToken token)
     {
         if (await MediaService.HasFixedPreviewDurationAsync(source, token, session.WebFormat?.Headers) && _preview == session)
@@ -207,7 +219,7 @@ public sealed partial class MainWindow
         if (!session.Opened)
         {
             session.Opened = true;
-            PortableStorage.Log.Write(LogLevel.Information, "Playback", "预览开始播放。");
+            WriteWindowLog(LogLevel.Information, "Playback", "预览开始播放。");
             PreviewPlaceholder.Visibility = Visibility.Collapsed;
             PreviewTransport.Visibility = Visibility.Visible;
             SetPreviewVolume(player);
@@ -277,6 +289,7 @@ public sealed partial class MainWindow
         return $"{(long)time.TotalHours}:{time.Minutes:00}:{time.Seconds:00}";
     }
 
+    // 程序同步进度条时禁止触发用户拖动的定位逻辑。
     private void SetSeekPosition(double value)
     {
         _updatingSeek = true;
@@ -361,12 +374,12 @@ public sealed partial class MainWindow
             return;
         if (!session.Opened && session.Fallback is { } fallback)
         {
-            PortableStorage.Log.Write(LogLevel.Warning, "Playback", "音频直放失败，切换到备用媒体管道。");
+            WriteWindowLog(LogLevel.Warning, "Playback", "音频直放失败，切换到备用媒体管道。");
             session.Fallback = null;
             await fallback();
             return;
         }
-        PortableStorage.Log.Write(LogLevel.Error, "Playback", string.IsNullOrWhiteSpace(message) ? "VLC 无法播放此媒体。" : message);
+        WriteWindowLog(LogLevel.Error, "Playback", string.IsNullOrWhiteSpace(message) ? "VLC 无法播放此媒体。" : message);
         Task cleanup = StopPreviewAsync();
         PreviewMessage.Text = string.IsNullOrWhiteSpace(message) ? "VLC 无法播放此媒体。" : $"无法播放此媒体。{Environment.NewLine}{message}";
         await cleanup;
@@ -374,16 +387,19 @@ public sealed partial class MainWindow
 
     private async void StopPreview_Click(object sender, RoutedEventArgs e) => await StopPreviewAsync();
 
+    // 同一 RTP 或 UDP 端口开始录制前，先释放占用该端口的预览。
     private Task ReleaseDatagramPreviewAsync(Uri? source = null) =>
         _preview?.NetworkSource is { Scheme: "rtp" or "udp" } active &&
         (source is null || active.Port == source.Port) ? StopPreviewAsync() : _previewCleanup;
 
+    /// <summary>解除当前预览与界面的关联并开始释放其资源。</summary>
+    /// <returns>等待预览资源释放的任务。若已开始清理则返回正在运行的清理任务。</returns>
     private Task StopPreviewAsync()
     {
         if (_preview is not { } session)
             return _previewCleanup;
         _preview = null;
-        PortableStorage.Log.Write(LogLevel.Debug, "Playback", "正在关闭预览。");
+        WriteWindowLog(LogLevel.Debug, "Playback", "正在关闭预览。");
         _previewClock?.Stop();
         _draggingSeek = false;
         PreviewTransport.Visibility = Visibility.Collapsed;
@@ -405,7 +421,7 @@ public sealed partial class MainWindow
         {
             // Cancel the producer first so VLC can exit a blocking read from the audio pipe.
             try { await session.Cancellation.CancelAsync(); }
-            catch (Exception ex) { PortableStorage.Log.Write(LogLevel.Warning, "Playback", "无法取消预览输入。", ex); }
+            catch (Exception ex) { WriteWindowLog(LogLevel.Warning, "Playback", "无法取消预览输入。", ex); }
             try { await session.Startup; }
             catch (Exception) { /* The preview request reports startup errors. */ }
             if (session.Player is { } player)
@@ -418,7 +434,7 @@ public sealed partial class MainWindow
                 }
             }
         }
-        catch (Exception ex) { PortableStorage.Log.Write(LogLevel.Warning, "Playback", "无法完整清理预览。", ex); }
+        catch (Exception ex) { WriteWindowLog(LogLevel.Warning, "Playback", "无法完整清理预览。", ex); }
         finally
         {
             DisposePreviewResource(session.Media);
@@ -428,14 +444,14 @@ public sealed partial class MainWindow
                 if (session.Producer is { } producer)
                     await producer.DisposeAsync();
             }
-            catch (Exception ex) { PortableStorage.Log.Write(LogLevel.Warning, "Playback", "无法清理预览输入进程。", ex); }
+            catch (Exception ex) { WriteWindowLog(LogLevel.Warning, "Playback", "无法清理预览输入进程。", ex); }
             finally { DisposePreviewResource(session.Cancellation); }
         }
     }
 
-    private static void DisposePreviewResource(IDisposable? resource)
+    private void DisposePreviewResource(IDisposable? resource)
     {
         try { resource?.Dispose(); }
-        catch (Exception ex) { PortableStorage.Log.Write(LogLevel.Warning, "Playback", "无法释放预览资源。", ex); }
+        catch (Exception ex) { WriteWindowLog(LogLevel.Warning, "Playback", "无法释放预览资源。", ex); }
     }
 }

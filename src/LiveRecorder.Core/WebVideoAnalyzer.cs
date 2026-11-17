@@ -5,14 +5,31 @@ using System.Text.Json;
 
 namespace LiveRecorder.Core;
 
+/// <summary>描述 yt-dlp 解析出的一个可选媒体格式。</summary>
+/// <param name="Label">用于格式列表的显示名称。</param>
+/// <param name="Url">解析得到的 HTTP(S) 媒体直链。</param>
+/// <param name="AudioOnly">是否只包含音轨。</param>
+/// <param name="PageUrl">用于重新提取格式的原网页地址。</param>
+/// <param name="FormatId">yt-dlp 返回的格式标识。</param>
+/// <param name="IsLive">解析时媒体是否为直播。</param>
 public sealed record WebVideoLink(string Label, string Url, bool AudioOnly, string PageUrl, string? FormatId, bool IsLive)
 {
     public MediaRequestHeaders? Headers { get; init; }
 }
 public sealed record WebVideoAnalysis(string Title, IReadOnlyList<WebVideoLink> Links);
 
+/// <summary>调用 yt-dlp 解析网页格式，并为所选音轨提供下载和预览。</summary>
+/// <param name="executable">yt-dlp 可执行文件路径。</param>
+/// <param name="deno">提供 JavaScript 运行环境的 Deno 可执行文件路径。</param>
+/// <param name="cacheDirectory">便携工具缓存目录。</param>
 public sealed class WebVideoAnalyzer(string? executable, string deno, string cacheDirectory)
 {
+    /// <summary>从网页提取用于预览或下载的 HTTP(S) 直链。</summary>
+    /// <param name="address">包含媒体的网页地址。</param>
+    /// <param name="token">用于中止分析的取消令牌。</param>
+    /// <returns>页面标题和可选格式列表。</returns>
+    /// <exception cref="ArgumentException">输入不是有效的 HTTP(S) 地址。</exception>
+    /// <exception cref="InvalidDataException">未得到可用的媒体直链。</exception>
     public async Task<WebVideoAnalysis> AnalyzeAsync(string address, CancellationToken token)
     {
         address = address.Trim();
@@ -42,6 +59,13 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         }
     }
 
+    /// <summary>重新提取所选音轨并将它下载为 M4A。</summary>
+    /// <param name="link">分析时选中的纯音频格式。</param>
+    /// <param name="directory">用于存放下载输出的目录。</param>
+    /// <param name="ffmpeg">FFmpeg 可执行文件路径。</param>
+    /// <param name="token">用于停止下载的取消令牌。</param>
+    /// <returns>生成的 M4A 文件路径。</returns>
+    /// <exception cref="InvalidDataException">下载结束时没有生成非空 M4A 文件。</exception>
     public async Task<string> DownloadAudioAsync(WebVideoLink link, string directory, string? ffmpeg, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
@@ -71,6 +95,11 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         }
     }
 
+    /// <summary>重新提取所选音轨，并将音频通过管道提供给预览播放器。</summary>
+    /// <param name="link">分析时选中的纯音频格式。</param>
+    /// <param name="ffmpeg">FFmpeg 可执行文件路径。</param>
+    /// <param name="token">用于停止预览供流的取消令牌。</param>
+    /// <returns>带进程监控的预览流。调用方负责异步释放。</returns>
     public PreviewStream OpenAudioPreview(WebVideoLink link, string? ffmpeg, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
@@ -89,6 +118,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         return PreviewStream.Start(start, "yt-dlp 无法在线播放所选音频。", token);
     }
 
+    // 用解析时选中的格式 ID 重新从原网页取流，避免取到其他音轨。
     private static string[] AudioOptions(WebVideoLink link, string ffmpeg)
     {
         if (!link.AudioOnly || string.IsNullOrWhiteSpace(link.FormatId) || !IsHttpUrl(link.PageUrl))
@@ -161,6 +191,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         if (candidates.Count == 0)
             throw new InvalidDataException("yt-dlp 没有返回可用的 HTTP(S) 媒体直链。");
 
+        // 视频按直链去重。音轨保留格式 ID，以便下载或预览时精确选轨。
         var seen = new HashSet<(string Url, string? FormatId)>();
         WebVideoLink[] links = candidates.AsEnumerable().Reverse().OrderBy(item => item.Order)
             .Where(item => seen.Add((item.Link.Url, item.Link.AudioOnly ? item.Link.FormatId : null)))

@@ -4,16 +4,17 @@ using Microsoft.UI.Xaml.Controls;
 
 namespace LiveRecorder;
 
+/// <summary>展示本地和上游工具版本，处理选择、安装和删除操作。</summary>
 public sealed partial class ToolVersionsDialog : ContentDialog
 {
     private readonly ToolUpdater _updater;
     private readonly Action<MediaTool, ToolInstallation> _changed;
     private readonly Func<Task> _stopPreview;
+    private readonly int _logWindowId;
     private readonly HashSet<string> _releaseTags = new(StringComparer.Ordinal);
     private CancellationTokenSource? _task;
     private int? _nextPage;
     private bool _usingWebList;
-    private bool _loaded;
     private bool _closeRequested;
 
     private MediaTool Tool => ToolBox.SelectedIndex == 1 ? MediaTool.YtDlp : MediaTool.Ffmpeg;
@@ -25,15 +26,19 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         public string Label => InUse ? $"{Tag}  ·  使用中" : IsUsable ? Tag : $"{Tag}  ·  不可用";
     }
 
-    internal ToolVersionsDialog(ToolUpdater updater, Action<MediaTool, ToolInstallation> changed, Func<Task> stopPreview)
+    internal ToolVersionsDialog(ToolUpdater updater, Action<MediaTool, ToolInstallation> changed, Func<Task> stopPreview, int logWindowId)
     {
         _updater = updater;
         _changed = changed;
         _stopPreview = stopPreview;
+        _logWindowId = logWindowId;
         InitializeComponent();
         ToolBox.SelectedIndex = 0;
     }
 
+    /// <summary>重新读取当前工具的本地版本和活动路径。</summary>
+    /// <param name="selectTag">优先选中的本地版本标签。为空时选中活动版本。</param>
+    /// <remarks>可安装列表仅使用对话框中已取得的发行数据。</remarks>
     private void RefreshVersions(string? selectTag = null)
     {
         ToolInstallation installed = _updater.GetInstallation(Tool);
@@ -47,6 +52,7 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         _changed(Tool, installed);
     }
 
+    // 从可安装列表中排除有效的本地版本，保留损坏版本的重装入口。
     private void RefreshAvailableVersions()
     {
         string? selectedTag = AvailableVersions.SelectedItem as string;
@@ -58,15 +64,11 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         UpdateButtons();
     }
 
-    private async void Dialog_Loaded(object sender, RoutedEventArgs e)
-    {
-        if (_loaded)
-            return;
-        _loaded = true;
-        await LoadReleasePageAsync(reset: true);
-    }
-
-    private async void Tool_Changed(object sender, SelectionChangedEventArgs e)
+    /// <summary>切换工具时重置上游列表和分页，并显示所选工具的本地版本。</summary>
+    /// <param name="sender">触发选择变更的工具下拉框。</param>
+    /// <param name="e">工具选择变更的事件数据。</param>
+    /// <remarks>上游版本由用户点击「刷新」后获取。</remarks>
+    private void Tool_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (ToolBox.SelectedIndex < 0 || AvailableVersions is null)
             return;
@@ -75,8 +77,6 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         _usingWebList = false;
         MessageBar.IsOpen = false;
         RefreshVersions();
-        if (_loaded)
-            await LoadReleasePageAsync(reset: true);
     }
 
     private void Version_Changed(object sender, SelectionChangedEventArgs e) => UpdateButtons();
@@ -85,6 +85,9 @@ public sealed partial class ToolVersionsDialog : ContentDialog
 
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await LoadReleasePageAsync(reset: true);
 
+    /// <summary>响应用户操作，查询当前工具的一页上游版本。</summary>
+    /// <param name="reset">为 <see langword="true" /> 时从第 1 页重新查询，为 <see langword="false" /> 时沿用上一次的来源和分页位置。</param>
+    /// <returns>查询完成的任务。尚无下一页时直接完成。</returns>
     private async Task LoadReleasePageAsync(bool reset)
     {
         int? page = reset ? 1 : _nextPage;
@@ -183,6 +186,7 @@ public sealed partial class ToolVersionsDialog : ContentDialog
             return;
         await RunAsync(null, async token =>
         {
+            // 先关闭预览，释放可能仍被播放进程占用的工具文件。
             await _stopPreview();
             token.ThrowIfCancellationRequested();
             _updater.DeleteVersion(Tool, version.Tag);
@@ -209,7 +213,7 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         catch (OperationCanceledException) { ShowMessage(InfoBarSeverity.Error, "操作超时，请重试。"); }
         catch (Exception ex)
         {
-            PortableStorage.Log.Write(LogLevel.Debug, "ToolVersions", $"处理 {ToolName} 版本时发生异常。", ex);
+            PortableStorage.Log.Write(LogLevel.Debug, "ToolVersions", $"处理 {ToolName} 版本时发生异常。", ex, _logWindowId);
             ShowMessage(InfoBarSeverity.Error, ex.Message);
         }
         finally
@@ -233,7 +237,7 @@ public sealed partial class ToolVersionsDialog : ContentDialog
             InfoBarSeverity.Warning => LogLevel.Warning,
             _ => LogLevel.Information
         };
-        PortableStorage.Log.Write(level, "ToolVersions", message);
+        PortableStorage.Log.Write(level, "ToolVersions", message, error: null, windowId: _logWindowId);
     }
 
     private void ReportWebFallback(CancellationToken token) => DispatcherQueue.TryEnqueue(() =>
@@ -242,6 +246,7 @@ public sealed partial class ToolVersionsDialog : ContentDialog
             ShowMessage(InfoBarSeverity.Warning, "GitHub API 查询失败（HTTP 403），正在使用官方发布页查询。");
     });
 
+    // 先请求取消正在执行的任务，让安装或删除流程完成清理后再关闭。
     private void Dialog_Closing(ContentDialog sender, ContentDialogClosingEventArgs args)
     {
         if (_task is null)
@@ -250,6 +255,8 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         CancelAndClose();
     }
 
+    /// <summary>请求关闭版本对话框。</summary>
+    /// <remarks>如果有任务在执行，先发送取消请求，由任务清理完成后关闭。</remarks>
     internal void CancelAndClose()
     {
         _closeRequested = true;

@@ -4,6 +4,7 @@ using System.Text;
 
 namespace LiveRecorder.Core;
 
+/// <summary>提供媒体子进程的启动环境、诊断读取和停止操作。</summary>
 internal static class ToolProcess
 {
     public static void Stop(Process process)
@@ -13,6 +14,9 @@ internal static class ToolProcess
         catch (Win32Exception) when (process.HasExited) { }
     }
 
+    /// <summary>持续排空诊断流并保留有限长度的末尾文本。</summary>
+    /// <param name="reader">进程诊断输出的读取器。</param>
+    /// <returns>最多保留 1800 个字符并去除首尾空白的诊断文本。</returns>
     public static async Task<string> ReadDiagnosticTailAsync(StreamReader reader)
     {
         const int maxCharacters = 1800;
@@ -36,6 +40,11 @@ internal static class ToolProcess
         return path!;
     }
 
+    /// <summary>构建无控制台窗口的工具启动配置，并重定向临时文件及缓存路径。</summary>
+    /// <param name="executable">工具可执行文件路径。</param>
+    /// <param name="cacheDirectory">便携缓存根目录。</param>
+    /// <param name="workingDirectory">可选的工作目录，默认使用便携缓存。</param>
+    /// <returns>尚未启动的进程配置。</returns>
     public static ProcessStartInfo CreateStartInfo(string executable, string cacheDirectory, string? workingDirectory = null)
     {
         string temporary = Directory.CreateDirectory(Path.Combine(cacheDirectory, "temp")).FullName;
@@ -45,6 +54,7 @@ internal static class ToolProcess
             UseShellExecute = false,
             WorkingDirectory = workingDirectory ?? cacheDirectory
         };
+        // 把工具的临时文件和缓存留在便携程序目录内。
         start.Environment["TEMP"] = temporary;
         start.Environment["TMP"] = temporary;
         start.Environment["TMPDIR"] = temporary;

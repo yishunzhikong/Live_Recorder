@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 
 namespace LiveRecorder.Core;
 
+/// <summary>定义录制和合并共用的 MPEG-TS 分片规则。</summary>
 internal static partial class RecordingParts
 {
     private const int PacketSize = 188;
@@ -10,6 +11,10 @@ internal static partial class RecordingParts
     [GeneratedRegex(@"^part-\d{8}\.ts$", RegexOptions.CultureInvariant)]
     private static partial Regex PartName();
 
+    /// <summary>按编号查找录制分片并校验序列完整性。</summary>
+    /// <param name="directory">包含录制分片的目录。</param>
+    /// <returns>按编号排序的分片数组。目录无匹配分片时返回空数组。</returns>
+    /// <exception cref="InvalidDataException">匹配到的序列有缺号、空文件或非完整传输包。</exception>
     public static FileInfo[] Find(string directory)
     {
         FileInfo[] files = new DirectoryInfo(directory).EnumerateFiles("part-*.ts")
@@ -25,9 +30,19 @@ internal static partial class RecordingParts
         return files;
     }
 
+    /// <summary>按完整传输包边界把 MPEG-TS 输出切分成连续编号的文件。</summary>
+    /// <param name="source">上游提供的 MPEG-TS 流。</param>
+    /// <param name="createDirectory">首次开始写分片时调用，用于创建目标目录。</param>
+    /// <param name="cacheDirectory">未发布分片的暂存目录。</param>
+    /// <param name="maximumBytes">单段最大字节数，向下对齐到 188 字节的传输包边界。</param>
+    /// <param name="progress">可选的累计字节数和分片数接收方。</param>
+    /// <param name="received">每次成功读取数据后调用，用于重置录制无数据计时。</param>
+    /// <returns>读取上游直到流结束并完成分片保存的任务。</returns>
+    /// <exception cref="MediaPublishException">完整分片无法发布到目标目录。</exception>
     public static async Task SplitAsync(Stream source, Func<string> createDirectory, string cacheDirectory,
         long maximumBytes, IProgress<MediaProgress>? progress, Action received)
     {
+        // 分片大小向下对齐到完整传输包，避免在包中间切断。
         long limit = maximumBytes / PacketSize * PacketSize;
         byte[] buffer = new byte[BufferSize];
         int partNumber = 0;
@@ -63,6 +78,7 @@ internal static partial class RecordingParts
                     if (destination.Position == limit)
                         await FinishPartAsync().ConfigureAwait(false);
                 }
+                // 本次未凑齐的包留到下一轮，收齐后再写入。
                 buffered = length - packetBytes;
                 buffer.AsSpan(packetBytes, buffered).CopyTo(buffer);
             }
@@ -82,6 +98,7 @@ internal static partial class RecordingParts
         {
             await destination!.DisposeAsync().ConfigureAwait(false);
             destination = null;
+            // 编号属于连续序列，遇到占用应报告保存失败，便于保留缓存并排查。
             MediaOutput.Publish(incompletePath, directory!, $"part-{partNumber + 1:D8}", ".ts", useAvailableName: false);
             partNumber++;
             progress?.Report(new MediaProgress(Bytes: total, Parts: partNumber));

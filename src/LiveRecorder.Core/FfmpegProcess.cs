@@ -10,8 +10,23 @@ internal sealed class FfmpegFailureException(int exitCode, string[] diagnostics)
     public IReadOnlyList<string> Diagnostics { get; } = diagnostics;
 }
 
+/// <summary>执行 FFmpeg 并协调输入、输出、诊断和退出清理。</summary>
 internal static class FfmpegProcess
 {
+    /// <summary>运行 FFmpeg 并等待进程及其管道处理完成。</summary>
+    /// <param name="executable">FFmpeg 可执行文件路径。</param>
+    /// <param name="cacheDirectory">工作目录及工具缓存的根目录。</param>
+    /// <param name="arguments">逐项传给 FFmpeg 的参数，不需要预先添加命令行引号。</param>
+    /// <param name="progress">可选的媒体时间进度接收方。</param>
+    /// <param name="cancellationToken">请求停止本次执行的令牌。</param>
+    /// <param name="readOutput">可选的标准输出读取回调。</param>
+    /// <param name="writeInput">可选的标准输入写入回调，返回后关闭输入管道。</param>
+    /// <param name="finishOnCancellation">取消时是否先请求 FFmpeg 正常退出，让录制输出有机会完成封装。</param>
+    /// <param name="videoWritten">可选回调，在进度首次报告已输出视频帧时调用一次。</param>
+    /// <param name="readDiagnostic">可选的普通诊断行接收方。</param>
+    /// <returns>等待进程退出及管道读取完成的任务。</returns>
+    /// <exception cref="FfmpegFailureException">FFmpeg 以非零状态退出，且本次执行不属于宽限停止。</exception>
+    /// <exception cref="OperationCanceledException">执行前已取消，或运行中取消且未启用宽限停止。</exception>
     public static async Task RunAsync(
         string? executable,
         string cacheDirectory,
@@ -86,6 +101,7 @@ internal static class FfmpegProcess
     private static async Task WriteInputAsync(Stream stream, Func<Stream, CancellationToken, Task> writeInput,
         CancellationToken cancellationToken)
     {
+        // 写完后关闭标准输入，让读取 pipe:0 的 FFmpeg 收到 EOF。
         await using (stream)
             await writeInput(stream, cancellationToken).ConfigureAwait(false);
     }
@@ -93,6 +109,7 @@ internal static class FfmpegProcess
     private static async Task ReadErrorsAsync(Process process, Queue<string> diagnostics, IProgress<MediaProgress>? progress,
         Action? videoWritten, Action<string>? readDiagnostic)
     {
+        // 启用进度后，stderr 同时承载键值进度和普通诊断。
         bool readProgress = progress is not null || videoWritten is not null;
         while (await process.StandardError.ReadLineAsync().ConfigureAwait(false) is { } line)
         {
@@ -131,6 +148,7 @@ internal static class FfmpegProcess
         if (exitMonitoring.IsCancellationRequested)
             return;
 
+        // 录制停止时给 FFmpeg 留出写完容器尾部的机会，超时后再终止进程树。
         if (graceful)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(exitMonitoring);
