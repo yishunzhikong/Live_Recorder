@@ -160,8 +160,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     }
 
     public static string SaveDownloadedAudio(string stagedFile, string directory, DateTime completedAt) =>
-        MoveToAvailableName(stagedFile, Directory.CreateDirectory(directory).FullName, FormattableString.Invariant($"audio_{completedAt:yyyyMMdd_HHmmss}"),
-            ".m4a");
+        MediaOutput.Publish(stagedFile, directory, TimestampedName("audio", completedAt), ".m4a");
 
     public PreviewStream OpenNetworkPreview(Uri source, CancellationToken token, MediaRequestHeaders? headers = null)
     {
@@ -280,6 +279,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         string partial = Path.Combine(cacheDirectory, $"media-{Guid.NewGuid():N}.part");
         string[] containerOptions = format == "mp4" ? ["-movflags", "+faststart"] : [];
         bool hasVideo = false;
+        bool preservePartial = false;
         Action? noteVideo = audioName is null ? null : () => hasVideo = true;
         try
         {
@@ -289,11 +289,11 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
             if (!File.Exists(partial) || new FileInfo(partial).Length == 0)
                 throw new InvalidOperationException("FFmpeg 没有生成输出文件。");
             token.ThrowIfCancellationRequested();
-            Directory.CreateDirectory(directory);
             string name = !hasVideo && audioName is not null ? audioName : Path.GetFileNameWithoutExtension(output);
-            return MoveToAvailableName(partial, directory, name, Path.GetExtension(output));
+            return MediaOutput.Publish(partial, directory, name, Path.GetExtension(output));
         }
-        finally { File.Delete(partial); }
+        catch (MediaPublishException) { preservePartial = true; throw; }
+        finally { if (!preservePartial) File.Delete(partial); }
     }
 
     private async Task<string?> TryDownloadHttpAsync(Uri source, string directory,
@@ -336,6 +336,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         Directory.CreateDirectory(cacheDirectory);
         string partial = Path.Combine(cacheDirectory, $"download-{Guid.NewGuid():N}.part");
         long? expected = response.Content.Headers.ContentLength;
+        bool preservePartial = false;
         try
         {
             long received = headerLength;
@@ -364,10 +365,10 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
                 throw new IOException("下载字节数与服务器声明的大小不一致。");
             progress?.Report(new MediaProgress(Bytes: received, TotalBytes: expected));
             token.ThrowIfCancellationRequested();
-            string destination = Directory.CreateDirectory(Path.GetDirectoryName(output)!).FullName;
-            return MoveToAvailableName(partial, destination, Path.GetFileNameWithoutExtension(output), Path.GetExtension(output));
+            return MediaOutput.Publish(partial, Path.GetDirectoryName(output)!, Path.GetFileNameWithoutExtension(output), Path.GetExtension(output));
         }
-        finally { File.Delete(partial); }
+        catch (MediaPublishException) { preservePartial = true; throw; }
+        finally { if (!preservePartial) File.Delete(partial); }
     }
 
     private static string[] NetworkInput(Uri source, bool hls = false, MediaRequestHeaders? headers = null)
@@ -402,7 +403,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         string name = "record_" + startedAt.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
         for (int count = 1; ; count++)
         {
-            string destination = Path.Combine(directory, AvailableName(name, count));
+            string destination = Path.Combine(directory, MediaOutput.AvailableName(name, count));
             if (CreateDirectoryW(destination, nint.Zero))
                 return destination;
             int error = Marshal.GetLastWin32Error();
@@ -415,28 +416,4 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CreateDirectoryW(string path, nint securityAttributes);
 
-    private static string AvailableName(string name, int count) =>
-        count == 1 ? name : FormattableString.Invariant($"{name} ({count})");
-
-    private static string MoveToAvailableName(string source, string directory, string name, string extension)
-    {
-        const int fileExists = unchecked((int)0x80070050);
-        const int alreadyExists = unchecked((int)0x800700B7);
-
-        for (int count = 1; ; count++)
-        {
-            string destination = Path.Combine(directory, AvailableName(name, count) + extension);
-            if (Path.Exists(destination))
-                continue;
-            try
-            {
-                File.Move(source, destination);
-                return destination;
-            }
-            catch (IOException ex) when (ex.HResult is fileExists or alreadyExists || Path.Exists(destination))
-            {
-                // Another task may have claimed the name after the existence check.
-            }
-        }
-    }
 }

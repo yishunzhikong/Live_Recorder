@@ -50,14 +50,16 @@ public sealed partial class MainWindow
     private async Task<string> DownloadWebAudioAsync(WebVideoLink audio, string directory, CancellationToken token)
     {
         DirectoryInfo work = Directory.CreateDirectory(Path.Combine(PortableStorage.CacheDirectory, $"audio-{Guid.NewGuid():N}"));
+        bool preserveDownload = false;
         try
         {
             SetStatus("正在下载音频", "yt-dlp 正在下载所选音轨并准备 M4A 文件。");
             string file = await _webAnalyzer.DownloadAudioAsync(audio, work.FullName, _ffmpegPath, token);
             token.ThrowIfCancellationRequested();
-            return MediaService.SaveDownloadedAudio(file, directory, DateTime.Now);
+            return await Task.Run(() => MediaService.SaveDownloadedAudio(file, directory, DateTime.Now), token);
         }
-        finally { DeleteWebAudioFiles(work); }
+        catch (MediaPublishException) { preserveDownload = true; throw; }
+        finally { if (!preserveDownload) DeleteWebAudioFiles(work); }
     }
 
     private static void DeleteWebAudioFiles(DirectoryInfo folder)

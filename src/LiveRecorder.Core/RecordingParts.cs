@@ -35,6 +35,7 @@ internal static partial class RecordingParts
         int buffered = 0;
         FileStream? destination = null;
         string? directory = null;
+        bool preservePart = false;
         string incompletePath = Path.Combine(cacheDirectory, $"record-{Guid.NewGuid():N}.part");
         try
         {
@@ -68,18 +69,20 @@ internal static partial class RecordingParts
             if (destination is not null)
                 await FinishPartAsync().ConfigureAwait(false);
         }
+        catch (MediaPublishException) { preservePart = true; throw; }
         finally
         {
             if (destination is not null)
                 await destination.DisposeAsync().ConfigureAwait(false);
-            File.Delete(incompletePath);
+            if (!preservePart)
+                File.Delete(incompletePath);
         }
 
         async Task FinishPartAsync()
         {
             await destination!.DisposeAsync().ConfigureAwait(false);
             destination = null;
-            File.Move(incompletePath, Path.Combine(directory!, $"part-{partNumber + 1:D8}.ts"));
+            MediaOutput.Publish(incompletePath, directory!, $"part-{partNumber + 1:D8}", ".ts", useAvailableName: false);
             partNumber++;
             progress?.Report(new MediaProgress(Bytes: total, Parts: partNumber));
         }
