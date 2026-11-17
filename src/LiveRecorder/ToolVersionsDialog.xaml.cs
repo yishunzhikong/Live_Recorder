@@ -7,7 +7,7 @@ namespace LiveRecorder;
 public sealed partial class ToolVersionsDialog : ContentDialog
 {
     private readonly ToolUpdater _updater;
-    private readonly Action _changed;
+    private readonly Action<MediaTool, ToolInstallation> _changed;
     private readonly Func<Task> _stopPreview;
     private readonly HashSet<string> _releaseTags = new(StringComparer.Ordinal);
     private CancellationTokenSource? _task;
@@ -20,12 +20,12 @@ public sealed partial class ToolVersionsDialog : ContentDialog
     private string ToolName => Tool == MediaTool.Ffmpeg ? "FFmpeg" : "yt-dlp";
     private VersionRow? Selection => VersionList.SelectedItem as VersionRow;
 
-    public sealed record VersionRow(string Tag, bool InUse)
+    public sealed record VersionRow(string Tag, bool InUse, bool IsUsable)
     {
-        public string Label => InUse ? $"{Tag}  ·  使用中" : Tag;
+        public string Label => InUse ? $"{Tag}  ·  使用中" : IsUsable ? Tag : $"{Tag}  ·  不可用";
     }
 
-    internal ToolVersionsDialog(ToolUpdater updater, Action changed, Func<Task> stopPreview)
+    internal ToolVersionsDialog(ToolUpdater updater, Action<MediaTool, ToolInstallation> changed, Func<Task> stopPreview)
     {
         _updater = updater;
         _changed = changed;
@@ -36,19 +36,22 @@ public sealed partial class ToolVersionsDialog : ContentDialog
 
     private void RefreshVersions(string? selectTag = null)
     {
-        VersionRow[] versions = _updater.GetInstalledVersions(Tool)
-            .Select(row => new VersionRow(row.Tag, row.InUse)).ToArray();
+        ToolInstallation installed = _updater.GetInstallation(Tool);
+        VersionRow[] versions = installed.Versions
+            .Select(row => new VersionRow(row.Tag, row.InUse, row.IsUsable)).ToArray();
         VersionRow? active = versions.FirstOrDefault(version => version.InUse);
-        ActiveVersion.Text = active is null ? "尚未安装" : $"程序使用版本 {active.Tag}";
+        ActiveVersion.Text = active is not null ? $"程序使用版本 {active.Tag}" : versions.Length == 0 ? "尚未安装" : "没有可用版本";
         VersionList.ItemsSource = versions;
         VersionList.SelectedItem = versions.FirstOrDefault(version => version.Tag == selectTag) ?? active;
         RefreshAvailableVersions();
+        _changed(Tool, installed);
     }
 
     private void RefreshAvailableVersions()
     {
         string? selectedTag = AvailableVersions.SelectedItem as string;
-        var installed = VersionList.Items.OfType<VersionRow>().Select(version => version.Tag).ToHashSet(StringComparer.Ordinal);
+        var installed = VersionList.Items.OfType<VersionRow>().Where(version => version.IsUsable)
+            .Select(version => version.Tag).ToHashSet(StringComparer.Ordinal);
         string[] choices = _releaseTags.Where(tag => !installed.Contains(tag)).OrderByDescending(Version.Parse).ToArray();
         AvailableVersions.ItemsSource = choices;
         AvailableVersions.SelectedItem = choices.Contains(selectedTag) ? selectedTag : choices.FirstOrDefault();
@@ -118,9 +121,9 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         InstallButton.IsEnabled = available && AvailableVersions.SelectedItem is string;
         MoreButton.IsEnabled = available && _nextPage is not null;
         RefreshButton.IsEnabled = available;
-        UseButton.IsEnabled = available && Selection is not null;
+        UseButton.IsEnabled = available && Selection is { IsUsable: true };
         DeleteButton.IsEnabled = available && Selection is not null;
-        AutoButton.IsEnabled = available && VersionList.Items.Count > 0;
+        AutoButton.IsEnabled = available && VersionList.Items.OfType<VersionRow>().Any(version => version.IsUsable);
     }
 
     private async void Install_Click(object sender, RoutedEventArgs e)
@@ -148,7 +151,7 @@ public sealed partial class ToolVersionsDialog : ContentDialog
 
     private async void Use_Click(object sender, RoutedEventArgs e)
     {
-        if (Selection is not { } version)
+        if (Selection is not { IsUsable: true } version)
             return;
         await RunAsync(version.Tag, async token =>
         {
@@ -160,14 +163,14 @@ public sealed partial class ToolVersionsDialog : ContentDialog
     private async void Auto_Click(object sender, RoutedEventArgs e) => await RunAsync(null, _ =>
     {
         _updater.SelectLatest(Tool);
-        return Task.FromResult("程序将自动使用本地版本号最高的版本。");
+        return Task.FromResult("程序将自动使用本地可用的最高版本。");
     });
 
     private void Delete_Opening(object sender, object e)
     {
         if (Selection is not { } version)
             return;
-        string consequence = !version.InUse ? "" : VersionList.Items.Count == 1
+        string consequence = !version.InUse ? "" : !VersionList.Items.OfType<VersionRow>().Any(row => row.Tag != version.Tag && row.IsUsable)
             ? "删除后需重新安装才能使用该工具。"
             : "程序将自动选择剩余的最新版本。";
         DeleteMessage.Text = $"删除 {ToolName} {version.Tag}？{consequence}";
@@ -199,10 +202,7 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         {
             string message = await action(task.Token);
             if (changesTools)
-            {
-                _changed();
                 RefreshVersions(selectTag);
-            }
             ShowMessage(changesTools ? InfoBarSeverity.Success : InfoBarSeverity.Informational, message);
         }
         catch (OperationCanceledException) when (task.IsCancellationRequested) { }

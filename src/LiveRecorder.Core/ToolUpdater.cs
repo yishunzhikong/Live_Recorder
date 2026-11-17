@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -11,7 +12,11 @@ namespace LiveRecorder.Core;
 public enum MediaTool { Ffmpeg, YtDlp }
 
 public sealed record ToolUpdateResult(Version? Before, Version After, bool Updated, bool UsedWebFallback);
-public sealed record ToolVersion(string Tag, bool InUse);
+public sealed record ToolVersion(string Tag, bool InUse)
+{
+    public bool IsUsable { get; init; } = true;
+}
+public sealed record ToolInstallation(string? ActiveTag, string? ActiveExecutable, IReadOnlyList<ToolVersion> Versions);
 public sealed record ToolReleasePage(IReadOnlyList<string> Tags, int? NextPage, bool UsedWebFallback);
 
 public sealed class ToolUpdater
@@ -46,16 +51,21 @@ public sealed class ToolUpdater
             _configuration.Load(directory);
     }
 
-    public string? GetExecutable(MediaTool tool) => FindActive(Definition(tool))?.Path;
+    public string? GetExecutable(MediaTool tool) => GetInstallation(tool).ActiveExecutable;
 
-    public string? GetActiveTag(MediaTool tool) => FindActive(Definition(tool))?.Tag;
+    public string? GetActiveTag(MediaTool tool) => GetInstallation(tool).ActiveTag;
 
-    public IReadOnlyList<ToolVersion> GetInstalledVersions(MediaTool kind)
+    public IReadOnlyList<ToolVersion> GetInstalledVersions(MediaTool kind) => GetInstallation(kind).Versions;
+
+    public ToolInstallation GetInstallation(MediaTool kind)
     {
         Tool tool = Definition(kind);
-        InstalledTool[] installed = ReadInstalled(tool);
-        string? active = FindActive(tool, installed)?.Tag;
-        return installed.Select(version => new ToolVersion(version.Tag, version.Tag == active)).ToArray();
+        var installed = ReadInstalled(tool).Select(version => (Version: version, IsUsable: IsWindowsExecutable(version.Path))).ToArray();
+        string? preferred = ReadPreference(_configuration.Current.Tools, tool);
+        InstalledTool? active = installed.FirstOrDefault(item => item.IsUsable && item.Version.Tag == preferred).Version
+            ?? installed.FirstOrDefault(item => item.IsUsable).Version;
+        return new ToolInstallation(active?.Tag, active?.Path, installed
+            .Select(item => new ToolVersion(item.Version.Tag, item.Version == active) { IsUsable = item.IsUsable }).ToArray());
     }
 
     public async Task SelectVersionAsync(MediaTool kind, string tag, CancellationToken token)
@@ -566,13 +576,6 @@ public sealed class ToolUpdater
 
     private static Tool Definition(MediaTool kind) => kind == MediaTool.Ffmpeg ? Ffmpeg : YtDlp;
 
-    private InstalledTool? FindActive(Tool tool, InstalledTool[]? versions = null)
-    {
-        versions ??= ReadInstalled(tool);
-        string? preferred = ReadPreference(_configuration.Current.Tools, tool);
-        return versions.FirstOrDefault(version => version.Tag == preferred) ?? versions.FirstOrDefault();
-    }
-
     private InstalledTool FindVersion(Tool tool, string tag) =>
         ReadInstalled(tool).FirstOrDefault(version => version.Tag == tag)
         ?? throw new InvalidOperationException($"{tool.Name} {tag} 未安装。");
@@ -593,9 +596,28 @@ public sealed class ToolUpdater
         {
             string name = Path.GetFileName(directory);
             string path = Path.Combine(directory, tool.Executable);
-            if (VersionText.IsMatch(name) && Version.TryParse(name, out Version? version) && File.Exists(path))
+            if (VersionText.IsMatch(name) && Version.TryParse(name, out Version? version))
                 installed.Add(new InstalledTool(name, version, path));
         }
         return installed.OrderByDescending(version => version.Version).ThenBy(version => version.Tag, StringComparer.Ordinal).ToArray();
+    }
+
+    private static bool IsWindowsExecutable(string path)
+    {
+        try
+        {
+            using FileStream file = File.OpenRead(path);
+            using var reader = new PEReader(file);
+            PEHeaders headers = reader.PEHeaders;
+            Characteristics characteristics = headers.CoffHeader.Characteristics;
+            return headers.PEHeader is not null && headers.CoffHeader.Machine is Machine.Amd64 or Machine.I386
+                && (characteristics & Characteristics.ExecutableImage) != 0 && (characteristics & Characteristics.Dll) == 0
+                && headers.SectionHeaders.All(section => section.SizeOfRawData >= 0 && section.PointerToRawData >= 0 &&
+                    (long)section.PointerToRawData + section.SizeOfRawData <= file.Length);
+        }
+        catch (Exception ex) when (ex is BadImageFormatException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 }

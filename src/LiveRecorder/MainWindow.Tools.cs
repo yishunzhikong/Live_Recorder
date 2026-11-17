@@ -10,7 +10,18 @@ public sealed partial class MainWindow
     private string? _ffmpegPath;
     private ToolVersionsDialog? _toolVersionsDialog;
 
-    private void ReloadMediaTools() => (_media, _webAnalyzer, _ffmpegPath) = ResolveMediaTools();
+    private void ReloadMediaTool(MediaTool tool, ToolInstallation installed)
+    {
+        if (tool == MediaTool.Ffmpeg)
+        {
+            _ffmpegPath = installed.ActiveExecutable;
+            _media = new MediaService(_ffmpegPath, PortableStorage.CacheDirectory);
+        }
+        else
+        {
+            _webAnalyzer = new WebVideoAnalyzer(installed.ActiveExecutable, _toolUpdater.DenoPath, PortableStorage.CacheDirectory);
+        }
+    }
 
     private (MediaService Media, WebVideoAnalyzer Web, string? FfmpegPath) ResolveMediaTools()
     {
@@ -28,7 +39,7 @@ public sealed partial class MainWindow
     {
         if (_operation is not null || _toolVersionsDialog is not null || _closeWhenIdle)
             return;
-        var dialog = new ToolVersionsDialog(_toolUpdater, ReloadMediaTools, StopPreviewAsync)
+        var dialog = new ToolVersionsDialog(_toolUpdater, ReloadMediaTool, StopPreviewAsync)
         {
             XamlRoot = ((FrameworkElement)Content).XamlRoot
         };
@@ -59,10 +70,11 @@ public sealed partial class MainWindow
             finished = true;
         }
         string source = result.UsedWebFallback ? "GitHub API 查询失败（HTTP 403），已使用官方发布页查询。\n" : "";
-        string active = $"\n程序使用版本 {_toolUpdater.GetActiveTag(tool)}。";
+        ToolInstallation installed = _toolUpdater.GetInstallation(tool);
+        ReloadMediaTool(tool, installed);
+        string active = installed.ActiveTag is { } tag ? $"\n程序使用版本 {tag}。" : "\n没有可用版本。";
         if (result.Updated)
         {
-            ReloadMediaTools();
             if (result.Before is null)
                 SetStatus($"{name} 已安装", $"{source}版本 {result.After}，SHA-256 与运行版本校验通过。{active}");
             else
