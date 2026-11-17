@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using LiveRecorder.Core;
+using Windows.Storage;
 
 namespace LiveRecorder;
 
@@ -35,6 +36,22 @@ internal static class PortableStorage
 
     public static string DownloadsDirectory()
     {
+        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        try
+        {
+            UserDataPaths paths = UserDataPaths.GetDefault();
+            // GetDefault can name a different user in a multi-user session.
+            if (profile.Length > 0 &&
+                string.Equals(Path.TrimEndingDirectorySeparator(paths.Profile), Path.TrimEndingDirectorySeparator(profile),
+                    StringComparison.OrdinalIgnoreCase) &&
+                Path.IsPathFullyQualified(paths.Downloads))
+                return paths.Downloads;
+        }
+        catch (Exception ex) when (ex is COMException or UnauthorizedAccessException)
+        {
+            // Use the shell lookup when the WinRT paths are unavailable.
+        }
+
         Guid downloads = new("374DE290-123F-4565-9164-39C4925E467B");
         const uint dontVerify = 0x4000;
         int result = SHGetKnownFolderPath(in downloads, dontVerify, nint.Zero, out nint path);
@@ -44,7 +61,7 @@ internal static class PortableStorage
                 return directory;
         }
         finally { Marshal.FreeCoTaskMem(path); }
-        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+        return Path.Combine(profile, "Downloads");
     }
 
     [DllImport("shell32.dll", ExactSpelling = true)]
