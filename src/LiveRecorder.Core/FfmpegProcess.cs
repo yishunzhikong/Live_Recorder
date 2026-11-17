@@ -61,13 +61,8 @@ internal static class FfmpegProcess
         try
         {
             // A failed disk write must stop FFmpeg even if its stdout pipe is still full.
-            var running = new List<Task> { exit, output, errors };
-            while (running.Count != 0)
-            {
-                Task completed = await Task.WhenAny(running).ConfigureAwait(false);
-                running.Remove(completed);
+            await foreach (Task completed in Task.WhenEach(exit, output, errors).ConfigureAwait(false))
                 await completed.ConfigureAwait(false);
-            }
 
             if (!finishOnCancellation)
                 cancellationToken.ThrowIfCancellationRequested();
