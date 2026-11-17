@@ -55,33 +55,14 @@ public sealed class MediaService(string? ffmpeg, string cacheDirectory)
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic) =>
         RecordAsync(NetworkInput(source), directory, partMegabytes, encoder, progress, token, deinterlace);
 
-    public Task CreateLivePreviewAsync(Uri source, string directory, CancellationToken token) =>
-        FfmpegProcess.RunAsync(ffmpeg, cacheDirectory,
-            [.. NetworkInput(source), .. MapStreams(),
-                "-vf", VideoFilters("scale=-2:trunc(min(ih\\,720)/2)*2", DeinterlaceMode.Automatic), "-pix_fmt", "yuv420p",
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-                "-r", "30", "-g", "60", "-sc_threshold", "0",
-                "-c:a", "aac", "-b:a", "128k",
-                "-f", "hls", "-hls_time", "2", "-hls_list_size", "6",
-                "-hls_flags", "delete_segments+independent_segments+temp_file",
-                "-hls_segment_filename", Path.Combine(directory, "segment-%08d.ts"),
-                Path.Combine(directory, "stream.m3u8")],
-            null, token);
-
-    public Task CreateAudioPreviewAsync(WebVideoAnalyzer analyzer, WebVideoLink link, string directory, CancellationToken token)
+    public PreviewStream OpenNetworkPreview(Uri source, CancellationToken token)
     {
-        string executable = ToolProcess.RequireExecutable(ffmpeg, "FFmpeg");
-        analyzer.RequireExecutable();
-        string[] playlist = link.IsLive
-            ? ["-hls_list_size", "6", "-hls_flags", "delete_segments+temp_file"]
-            : ["-hls_playlist_type", "event", "-hls_flags", "temp_file"];
-        return FfmpegProcess.RunAsync(executable, cacheDirectory,
-            ["-nostdin", "-protocol_whitelist", "pipe", "-readrate", "1", "-readrate_initial_burst", "4",
-                "-i", "pipe:0", "-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", "aac", "-b:a", "128k",
-                "-f", "hls", "-hls_time", "2", .. playlist,
-                "-hls_segment_filename", Path.Combine(directory, "segment-%08d.ts"),
-                Path.Combine(directory, "stream.m3u8")],
-            null, token, writeInput: (pipe, ct) => analyzer.StreamAudioAsync(link, directory, executable, pipe, ct));
+        var start = ToolProcess.CreateStartInfo(ToolProcess.RequireExecutable(ffmpeg, "FFmpeg"), cacheDirectory);
+        string[] arguments = ["-hide_banner", "-loglevel", "warning", "-nostdin", .. NetworkInput(source),
+            .. MapStreams(), "-c", "copy", "-f", "mpegts", "pipe:1"];
+        foreach (string argument in arguments)
+            start.ArgumentList.Add(argument);
+        return PreviewStream.Start(start, "FFmpeg 无法读取预览媒体流。", token);
     }
 
     public Task<RecordingResult> RecordSdpAsync(string path, string directory, int partMegabytes, VideoEncoder encoder,

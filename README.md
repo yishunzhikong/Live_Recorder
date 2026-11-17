@@ -17,7 +17,7 @@ Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视�
 
 右侧的预览区占纵向的四分之三。播放器的单行控制栏从左到右显示操作按钮、进度条和当前时间及总时长。下方工具栏提供预览、本地播放、下载和录制；SDP 录制、合并、转码和打开文件夹可从「更多操作」菜单进入。
 
-本地文件与 HTTP(S) 链接的播放格式取决于 Windows 的媒体解码支持。RTSP、RTMP、RTP、UDP 和 SRT 由 FFmpeg 转换为可预览的流，通常有数秒缓冲延迟。录制占用同一 RTP 或 UDP 端口时，应用会先释放预览连接。
+开发分支的预览使用嵌入式 LibVLC，直接读取本地文件和 HTTP(S)、HLS、RTSP、RTP、UDP、SRT 媒体流。RTMP 系列和 RTSPS 由 FFmpeg 读取并封装成实时流，再通过管道交给 LibVLC。录制需要同一 RTP 或 UDP 端口时，应用会先关闭预览连接。[LibVLCSharp WinUI](https://github.com/videolan/libvlcsharp/blob/3.x/src/LibVLCSharp.WinUI/README.md)
 
 ## yt-dlp
 
@@ -37,7 +37,7 @@ Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视�
 
 标题栏下方的「工具」菜单提供「安装 / 升级 FFmpeg」和「安装 / 升级 yt-dlp」。点击后，程序通过 GitHub API 查询上游稳定版及下载信息。如果 API 返回 HTTP 403，程序会提示并改用 GitHub 官方发布页查询。
 
-程序目录下的 `tools\ffmpeg`、`tools\yt-dlp` 和 `tools\deno` 按版本存放工具。FFmpeg 和 yt-dlp 安装时会核对 SHA-256、下载大小和工具实际报告的版本。预览分片、临时下载文件以及工具运行缓存使用程序目录下的 `cache`。移动程序时可一并移动 `tools`，继续使用已经安装的版本。
+程序目录下的 `tools\ffmpeg`、`tools\yt-dlp` 和 `tools\deno` 按版本存放工具。FFmpeg 和 yt-dlp 安装时会核对 SHA-256、下载大小和工具实际报告的版本。临时下载文件和工具运行缓存使用程序目录下的 `cache`。移动程序时可一并移动 `tools`，继续使用已经安装的版本。
 
 通过「工具 → 工具版本管理」可在应用内获取 FFmpeg 和 yt-dlp 的版本列表，从下拉框选择要安装的版本。点击「更多版本」可加载较早的发行版。已安装版本可以删除，也可以设为后续任务使用的版本。手动选择保存在程序目录的 `tools` 中。点击「自动选择」或删除正在使用的版本后，程序会使用剩余版本中版本号最高的一项。安装旧版需要上游提供对应的 Windows 文件和 SHA-256。
 

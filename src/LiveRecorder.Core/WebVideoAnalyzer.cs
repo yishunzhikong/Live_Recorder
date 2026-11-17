@@ -19,7 +19,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(75));
-        using var process = CreateProcess(["--skip-download", "--dump-single-json"], address);
+        using var process = new Process { StartInfo = CreateStartInfo(["--skip-download", "--dump-single-json"], address) };
         Start(process);
 
         Task<JsonDocument> output = JsonDocument.ParseAsync(process.StandardOutput.BaseStream, cancellationToken: timeout.Token);
@@ -42,10 +42,12 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
     public async Task<string> DownloadAudioAsync(WebVideoLink link, string directory, string? ffmpeg, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        using var process = CreateProcess(
-            [.. AudioOptions(link, ToolProcess.RequireExecutable(ffmpeg, "FFmpeg")), "--extract-audio", "--audio-format", "m4a",
-                "--output", "audio.%(ext)s", "--quiet"],
-            link.PageUrl, Path.GetFullPath(directory));
+        using var process = new Process
+        {
+            StartInfo = CreateStartInfo(
+                [.. AudioOptions(link, ToolProcess.RequireExecutable(ffmpeg, "FFmpeg")), "--extract-audio", "--audio-format", "m4a",
+                    "--output", "audio.%(ext)s", "--quiet"], link.PageUrl, Path.GetFullPath(directory))
+        };
         Start(process);
 
         Task output = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
@@ -66,33 +68,20 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         }
     }
 
-    public async Task StreamAudioAsync(WebVideoLink link, string directory, string ffmpeg, Stream destination,
-        CancellationToken token)
+    public PreviewStream OpenAudioPreview(WebVideoLink link, string? ffmpeg, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        using var process = CreateProcess(
-            [.. AudioOptions(link, ffmpeg), "--output", "-", "--no-part", "--quiet",
+        string executable = ToolProcess.RequireExecutable(ffmpeg, "FFmpeg");
+        ProcessStartInfo start = CreateStartInfo(
+            [.. AudioOptions(link, executable), "--output", "-", "--no-part", "--quiet",
                 // Let FFmpeg seek over HTTP when a file puts its index at the end.
                 "--downloader", "http:ffmpeg",
                 "--downloader-args", "ffmpeg_i:-rw_timeout 15000000",
                 "--downloader-args", "ffmpeg_o:-f matroska"],
-            link.PageUrl, directory);
-        process.StartInfo.Environment["PATH"] = Path.GetDirectoryName(Path.GetFullPath(ffmpeg)) + Path.PathSeparator
+            link.PageUrl);
+        start.Environment["PATH"] = Path.GetDirectoryName(executable) + Path.PathSeparator
             + Environment.GetEnvironmentVariable("PATH");
-        Start(process);
-
-        using var cancellation = token.UnsafeRegister(static state => Stop((Process)state!), process);
-        Task<string> errors = process.StandardError.ReadToEndAsync();
-        try
-        {
-            await process.StandardOutput.BaseStream.CopyToAsync(destination, token).ConfigureAwait(false);
-            await WaitForSuccessAsync(process, errors, "yt-dlp 无法在线播放所选音频。", token).ConfigureAwait(false);
-        }
-        finally
-        {
-            Stop(process);
-            await errors.ConfigureAwait(false);
-        }
+        return PreviewStream.Start(start, "yt-dlp 无法在线播放所选音频。", token);
     }
 
     private static string[] AudioOptions(WebVideoLink link, string ffmpeg)
@@ -104,7 +93,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
             "--ffmpeg-location", ffmpeg];
     }
 
-    private Process CreateProcess(string[] options, string address, string? directory = null)
+    private ProcessStartInfo CreateStartInfo(string[] options, string address, string? directory = null)
     {
         ProcessStartInfo start = ToolProcess.CreateStartInfo(RequireExecutable(), cacheDirectory, directory);
         start.RedirectStandardOutput = true;
@@ -118,7 +107,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         ];
         foreach (string argument in arguments)
             start.ArgumentList.Add(argument);
-        return new Process { StartInfo = start };
+        return start;
     }
 
     internal string RequireExecutable()

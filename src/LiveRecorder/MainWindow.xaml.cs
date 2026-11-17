@@ -23,6 +23,7 @@ public sealed partial class MainWindow : Window
     {
         (_media, _webAnalyzer, _ffmpegPath) = ResolveMediaTools();
         InitializeComponent();
+        InitializePreviewControls();
         _handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
         OutputBox.Text = PortableStorage.DownloadsDirectory();
         StatusDetail.Text = "粘贴媒体链接，或选择要处理的本地文件。";
