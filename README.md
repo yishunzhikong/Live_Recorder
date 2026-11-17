@@ -1,6 +1,6 @@
 # Live Recorder
 
-Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视频下载和录制工具。v1.1.0 提供「直播录制」和「yt-dlp」两种模式，支持 Windows 10 2004（19041）及以上版本和 Windows 11 的 x64 系统。
+Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 媒体下载和录制工具。v1.2.0 提供「直播录制」和「yt-dlp」两种模式，支持 Windows 10 2004（19041）及以上版本和 Windows 11 的 x64 系统。
 
 ## 运行发布版
 
@@ -61,12 +61,12 @@ dotnet build src/LiveRecorder/LiveRecorder.csproj -c Release
 
 ## 发布新版
 
-下方以 v1.1.0 为例。使用新的输出目录打包，目录名和 ZIP 文件名中的版本号应改为本次版本。
+下方以 v1.2.0 为例。使用新的输出目录打包，目录名和 ZIP 文件名中的版本号应改为本次版本。
 
 ```powershell
-dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-v1.1.0-win-x64
-Copy-Item -LiteralPath README.md -Destination artifacts/LiveRecorder-v1.1.0-win-x64/
-tar.exe -a -cf artifacts/LiveRecorder-v1.1.0-win-x64.zip --exclude='*.pdb' -C artifacts LiveRecorder-v1.1.0-win-x64
+dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-v1.2.0-win-x64
+Copy-Item -LiteralPath README.md -Destination artifacts/LiveRecorder-v1.2.0-win-x64/
+tar.exe -a -cf artifacts/LiveRecorder-v1.2.0-win-x64.zip --exclude='*.pdb' -C artifacts LiveRecorder-v1.2.0-win-x64
 ```
 
 发布目录包含应用以及 .NET 和 Windows App SDK 运行时。目标机器还需 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。
