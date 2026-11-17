@@ -4,7 +4,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Windows.Storage.Pickers;
+using Microsoft.Windows.Storage.Pickers;
 
 namespace LiveRecorder;
 
@@ -121,17 +121,15 @@ public sealed partial class MainWindow : Window
 
     private async Task<string?> PickFolderAsync()
     {
-        var picker = new FolderPicker { SuggestedStartLocation = PickerLocationId.Downloads };
-        picker.FileTypeFilter.Add("*");
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, _handle);
+        var picker = new FolderPicker(AppWindow.Id) { SuggestedStartLocation = PickerLocationId.Downloads };
         return (await picker.PickSingleFolderAsync())?.Path;
     }
 
     private async Task<string?> PickFileAsync(string extension)
     {
-        var picker = new FileOpenPicker { SuggestedStartLocation = PickerLocationId.VideosLibrary };
-        picker.FileTypeFilter.Add(extension);
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, _handle);
+        var picker = new FileOpenPicker(AppWindow.Id) { SuggestedStartLocation = PickerLocationId.VideosLibrary };
+        if (extension != "*")
+            picker.FileTypeFilter.Add(extension);
         return (await picker.PickSingleFileAsync())?.Path;
     }
 
