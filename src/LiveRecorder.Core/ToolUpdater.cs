@@ -254,9 +254,8 @@ public sealed class ToolUpdater
                     {
                         ZipArchiveEntry entry = zip.GetEntry($"{root}/{member}")
                             ?? throw new InvalidDataException($"FFmpeg 压缩包缺少 {member}。");
-                        await using Stream source = entry.Open();
-                        await using FileStream output = File.Create(Path.Combine(staging, Path.GetFileName(member)));
-                        await source.CopyToAsync(output, token).ConfigureAwait(false);
+                        await entry.ExtractToFileAsync(Path.Combine(staging, Path.GetFileName(member)), token)
+                            .ConfigureAwait(false);
                     }
                 }
                 File.Delete(artifact);
@@ -293,9 +292,7 @@ public sealed class ToolUpdater
             using (ZipArchive zip = ZipFile.OpenRead(artifact))
             {
                 ZipArchiveEntry entry = zip.GetEntry("deno.exe") ?? throw new InvalidDataException("Deno 压缩包缺少 deno.exe。");
-                await using Stream source = entry.Open();
-                await using FileStream output = File.Create(Path.Combine(staging, "deno.exe"));
-                await source.CopyToAsync(output, token).ConfigureAwait(false);
+                await entry.ExtractToFileAsync(Path.Combine(staging, "deno.exe"), token).ConfigureAwait(false);
             }
             File.Delete(artifact);
             token.ThrowIfCancellationRequested();
