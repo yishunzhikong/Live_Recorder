@@ -167,7 +167,9 @@ internal static class EncodingArguments
                 VideoResolution.P360 => (640, 360), VideoResolution.P480 => (854, 480), VideoResolution.P720 => (1280, 720),
                 VideoResolution.P1440 => (2560, 1440), VideoResolution.P2160 => (3840, 2160), _ => (1920, 1080)
             };
-            filters.Add(FormattableString.Invariant($"scale={width}:{height}:force_original_aspect_ratio=decrease:force_divisible_by=2"));
+            // Fit the displayed picture in the square-pixel canvas, including anamorphic sources.
+            filters.Add(FormattableString.Invariant(
+                $"scale='max(2,2*round(min({width},{height}*dar)/2))':'max(2,2*round(min({height},{width}/dar)/2))'"));
             filters.Add(FormattableString.Invariant($"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1"));
         }
         if (filters.Count > 0)
