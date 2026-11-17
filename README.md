@@ -2,10 +2,10 @@
 
 Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 媒体下载和录制工具。提供「直播录制」和「yt-dlp」两种模式，支持 Windows 10 2004（19041）及以上版本和 Windows 11 的 x64 系统。
 
-![](/img/yt-dlp模式.png)
-![](./img/编码设置.png)
-![](./img/工具版本管理.png)
 ![](./img/直播模式.png)
+![](./img/yt-dlp模式.png)
+![](./img/工具版本管理.png)
+![](./img/编码设置.png)
 
 ## 运行发布版
 
