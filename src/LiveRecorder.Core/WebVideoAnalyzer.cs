@@ -26,7 +26,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         Start(process);
 
         Task<JsonDocument> output = JsonDocument.ParseAsync(process.StandardOutput.BaseStream, cancellationToken: timeout.Token);
-        Task<string> errors = process.StandardError.ReadToEndAsync();
+        Task<string> errors = ToolProcess.ReadDiagnosticTailAsync(process.StandardError);
         try
         {
             await WaitForSuccessAsync(process, errors, "yt-dlp 无法分析此网页。", timeout.Token).ConfigureAwait(false);
@@ -34,7 +34,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         }
         finally
         {
-            Stop(process);
+            ToolProcess.Stop(process);
             try { (await output.ConfigureAwait(false)).Dispose(); }
             catch (JsonException) { /* yt-dlp errors may leave stdout empty or incomplete. */ }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
@@ -54,7 +54,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         Start(process);
 
         Task output = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
-        Task<string> errors = process.StandardError.ReadToEndAsync();
+        Task<string> errors = ToolProcess.ReadDiagnosticTailAsync(process.StandardError);
         try
         {
             await WaitForSuccessAsync(process, errors, "yt-dlp 无法下载所选音频。", token).ConfigureAwait(false);
@@ -66,7 +66,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         }
         finally
         {
-            Stop(process);
+            ToolProcess.Stop(process);
             await Task.WhenAll(output, errors).ConfigureAwait(false);
         }
     }
@@ -134,15 +134,8 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         await process.WaitForExitAsync(token).ConfigureAwait(false);
         if (process.ExitCode == 0)
             return;
-        string message = (await errors.ConfigureAwait(false)).Trim();
-        throw new InvalidOperationException(message.Length == 0 ? fallback : message[..Math.Min(message.Length, 1800)]);
-    }
-
-    private static void Stop(Process process)
-    {
-        try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-        catch (InvalidOperationException) { }
-        catch (Win32Exception) when (process.HasExited) { }
+        string message = await errors.ConfigureAwait(false);
+        throw new InvalidOperationException(message.Length == 0 ? fallback : message);
     }
 
     private static WebVideoAnalysis Parse(JsonElement media, string address)

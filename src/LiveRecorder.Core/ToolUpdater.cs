@@ -558,9 +558,7 @@ public sealed class ToolUpdater
         }
         finally
         {
-            try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-            catch (InvalidOperationException) { }
-            catch (System.ComponentModel.Win32Exception) when (process.HasExited) { }
+            ToolProcess.Stop(process);
             try { await Task.WhenAll(output, errors).ConfigureAwait(false); }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
         }

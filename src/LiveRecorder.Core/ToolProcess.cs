@@ -1,9 +1,34 @@
+using System.ComponentModel;
 using System.Diagnostics;
+using System.Text;
 
 namespace LiveRecorder.Core;
 
 internal static class ToolProcess
 {
+    public static void Stop(Process process)
+    {
+        try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+        catch (InvalidOperationException) { }
+        catch (Win32Exception) when (process.HasExited) { }
+    }
+
+    public static async Task<string> ReadDiagnosticTailAsync(StreamReader reader)
+    {
+        const int maxCharacters = 1800;
+        var tail = new StringBuilder(maxCharacters);
+        var buffer = new char[1024];
+        int count;
+        while ((count = await reader.ReadAsync(buffer.AsMemory()).ConfigureAwait(false)) > 0)
+        {
+            int discard = tail.Length + count - maxCharacters;
+            if (discard > 0)
+                tail.Remove(0, discard);
+            tail.Append(buffer, 0, count);
+        }
+        return tail.ToString().Trim();
+    }
+
     public static string RequireExecutable(string? path, string name)
     {
         if (!File.Exists(path))

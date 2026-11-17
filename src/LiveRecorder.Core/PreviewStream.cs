@@ -12,7 +12,7 @@ public sealed class PreviewStream : IAsyncDisposable
     {
         _process = process;
         Content = process.StandardOutput.BaseStream;
-        _cancellation = token.UnsafeRegister(static state => Stop((Process)state!), process);
+        _cancellation = token.UnsafeRegister(static state => ToolProcess.Stop((Process)state!), process);
         Completion = MonitorAsync(process, errorMessage, token);
     }
 
@@ -32,7 +32,7 @@ public sealed class PreviewStream : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Stop(process);
+            ToolProcess.Stop(process);
             process.Dispose();
             if (ex is Win32Exception)
                 throw new InvalidOperationException(errorMessage, ex);
@@ -42,31 +42,24 @@ public sealed class PreviewStream : IAsyncDisposable
 
     private static async Task MonitorAsync(Process process, string errorMessage, CancellationToken token)
     {
-        Task<string> errors = process.StandardError.ReadToEndAsync();
+        Task<string> errors = ToolProcess.ReadDiagnosticTailAsync(process.StandardError);
         try
         {
             await process.WaitForExitAsync(token).ConfigureAwait(false);
             if (process.ExitCode != 0)
             {
-                string detail = (await errors.ConfigureAwait(false)).Trim();
-                throw new InvalidOperationException(detail.Length == 0 ? errorMessage : detail[^Math.Min(detail.Length, 1800)..]);
+                string detail = await errors.ConfigureAwait(false);
+                throw new InvalidOperationException(detail.Length == 0 ? errorMessage : detail);
             }
         }
         finally { await errors.ConfigureAwait(false); }
-    }
-
-    private static void Stop(Process process)
-    {
-        try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-        catch (InvalidOperationException) { }
-        catch (Win32Exception) when (process.HasExited) { }
     }
 
     public async ValueTask DisposeAsync()
     {
         try
         {
-            Stop(_process);
+            ToolProcess.Stop(_process);
             await Completion.ConfigureAwait(false);
         }
         catch (Exception ex) { Debug.WriteLine(ex); }

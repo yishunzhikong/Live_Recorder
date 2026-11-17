@@ -50,16 +50,19 @@ internal static class FfmpegProcess
         using var exitMonitoring = new CancellationTokenSource();
         using var inputWriting = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var diagnostics = new Queue<string>();
-        Task errors = ReadErrorsAsync(process, diagnostics, progress, videoWritten, readDiagnostic);
-        Task exit = process.WaitForExitAsync();
-        Task output = readOutput?.Invoke(process.StandardOutput.BaseStream) ?? Task.CompletedTask;
-        Task input = writeInput is null
-            ? Task.CompletedTask
-            : WriteInputAsync(process.StandardInput.BaseStream, writeInput, inputWriting.Token);
-        Task stopping = StopOnCancellationAsync(process, finishOnCancellation, cancellationToken, exitMonitoring.Token);
+        Task exit = Task.CompletedTask, errors = Task.CompletedTask, output = Task.CompletedTask,
+            input = Task.CompletedTask, stopping = Task.CompletedTask;
 
         try
         {
+            exit = process.WaitForExitAsync();
+            errors = ReadErrorsAsync(process, diagnostics, progress, videoWritten, readDiagnostic);
+            stopping = StopOnCancellationAsync(process, finishOnCancellation, cancellationToken, exitMonitoring.Token);
+            if (readOutput is not null)
+                output = readOutput(process.StandardOutput.BaseStream);
+            if (writeInput is not null)
+                input = WriteInputAsync(process.StandardInput.BaseStream, writeInput, inputWriting.Token);
+
             // A failed disk write must stop FFmpeg even if its stdout pipe is still full.
             await foreach (Task completed in Task.WhenEach(exit, output, errors).ConfigureAwait(false))
                 await completed.ConfigureAwait(false);
@@ -74,7 +77,7 @@ internal static class FfmpegProcess
         {
             exitMonitoring.Cancel();
             inputWriting.Cancel();
-            Kill(process);
+            ToolProcess.Stop(process);
             try { await Task.WhenAll(exit, input, output, errors, stopping).ConfigureAwait(false); }
             catch (Exception) { /* Preserve the original failure. */ }
         }
@@ -141,13 +144,6 @@ internal static class FfmpegProcess
             }
             catch (Exception ex) when (ex is IOException or InvalidOperationException or OperationCanceledException) { }
         }
-        Kill(process);
-    }
-
-    private static void Kill(Process process)
-    {
-        try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
-        catch (InvalidOperationException) { }
-        catch (System.ComponentModel.Win32Exception) when (process.HasExited) { }
+        ToolProcess.Stop(process);
     }
 }
