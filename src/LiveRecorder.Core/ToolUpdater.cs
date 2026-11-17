@@ -71,11 +71,13 @@ public sealed class ToolUpdater
     {
         Tool tool = Definition(kind);
         InstalledTool installed = FindVersion(tool, tag);
+        string directory = Path.GetDirectoryName(installed.Path)!;
+        using Mutex mutex = PortableFileMutex.Create(directory);
         string staging = CreateStagingDirectory();
         bool cleanStaging = true;
+        PortableFileMutex.Enter(mutex);
         try
         {
-            string directory = Path.GetDirectoryName(installed.Path)!;
             string removed = Path.Combine(staging, "removed");
             Directory.Move(directory, removed);
             cleanStaging = false;
@@ -94,6 +96,7 @@ public sealed class ToolUpdater
         }
         finally
         {
+            mutex.ReleaseMutex();
             if (cleanStaging)
                 DeleteStagingDirectory(staging);
         }
@@ -222,8 +225,9 @@ public sealed class ToolUpdater
         InstalledTool[] installed = ReadInstalled(tool);
         InstalledTool? current = requestedTag is null ? installed.FirstOrDefault() :
             installed.FirstOrDefault(version => version.Tag == requestedTag);
-        if (current is not null)
-            await VerifyVersionAsync(kind, current.Path, current.Version, token).ConfigureAwait(false);
+        if (current is not null && !await IsValidInstallationAsync(current.Path, current.Version, VersionCheck(kind), token)
+            .ConfigureAwait(false))
+            current = null;
         Version? before = current?.Version;
         ReleaseAsset? release = null;
         bool usedWebFallback = false;
@@ -261,13 +265,8 @@ public sealed class ToolUpdater
                 File.Delete(artifact);
             }
             await VerifyVersionAsync(kind, executable, release.Version, token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
             string target = Path.Combine(toolDirectory, release.Tag);
-            try { Directory.Move(staging, target); }
-            catch (IOException) when (Directory.Exists(target))
-            {
-                await VerifyVersionAsync(kind, Path.Combine(target, tool.Executable), release.Version, token).ConfigureAwait(false);
-            }
+            CommitInstallation(staging, target, token);
             return new ToolUpdateResult(before, release.Version, true, usedWebFallback);
         }
         finally
@@ -279,7 +278,9 @@ public sealed class ToolUpdater
     private async Task InstallDenoAsync(IProgress<MediaProgress>? progress, CancellationToken token)
     {
         string executable = DenoPath;
-        if (File.Exists(executable))
+        Version expected = Version.Parse(DenoVersion);
+        var check = ("--version", @"\Adeno ([0-9.]+)(?:\s|\z)");
+        if (await IsValidInstallationAsync(executable, expected, check, token).ConfigureAwait(false))
             return;
         string target = Path.GetDirectoryName(executable)!;
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
@@ -295,15 +296,44 @@ public sealed class ToolUpdater
                 await entry.ExtractToFileAsync(Path.Combine(staging, "deno.exe"), token).ConfigureAwait(false);
             }
             File.Delete(artifact);
-            token.ThrowIfCancellationRequested();
-            try { Directory.Move(staging, target); }
-            catch (IOException) when (File.Exists(executable)) { /* Another instance installed the same release. */ }
+            await VerifyVersionAsync(Path.Combine(staging, "deno.exe"), expected, check, token).ConfigureAwait(false);
+            CommitInstallation(staging, target, token);
         }
         finally { DeleteStagingDirectory(staging); }
     }
 
     private string CreateStagingDirectory() =>
         Directory.CreateDirectory(Path.Combine(_cacheDirectory, $"update-{Guid.NewGuid():N}")).FullName;
+
+    private void CommitInstallation(string staging, string target, CancellationToken token)
+    {
+        using Mutex mutex = PortableFileMutex.Create(target);
+        string? backup = null;
+        PortableFileMutex.Enter(mutex);
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            if (Directory.Exists(target))
+            {
+                string pending = Path.Combine(_cacheDirectory, $"tool-backup-{Guid.NewGuid():N}");
+                Directory.Move(target, pending);
+                backup = pending;
+            }
+            try { Directory.Move(staging, target); }
+            catch (Exception installError) when (backup is not null && installError is IOException or UnauthorizedAccessException)
+            {
+                try { Directory.Move(backup, target); }
+                catch (Exception restoreError) when (restoreError is IOException or UnauthorizedAccessException)
+                {
+                    throw new IOException($"无法安装或恢复原版本。原文件保存在 {backup}。", new AggregateException(installError, restoreError));
+                }
+                throw;
+            }
+        }
+        finally { mutex.ReleaseMutex(); }
+        if (backup is not null)
+            DeleteStagingDirectory(backup);
+    }
 
     private static void DeleteStagingDirectory(string staging)
     {
@@ -479,12 +509,38 @@ public sealed class ToolUpdater
             throw new InvalidDataException("下载文件的大小或 SHA-256 与上游记录不符。");
     }
 
-    private async Task VerifyVersionAsync(MediaTool kind, string executable, Version expected, CancellationToken token)
+    private static (string Arguments, string Pattern) VersionCheck(MediaTool kind) => kind == MediaTool.Ffmpeg
+        ? ("-version", @"\Affmpeg version ([0-9.]+)") : ("--ignore-config --version", @"\A([0-9.]+)(?:\s|\z)");
+
+    private Task VerifyVersionAsync(MediaTool kind, string executable, Version expected, CancellationToken token) =>
+        VerifyVersionAsync(executable, expected, VersionCheck(kind), token);
+
+    private async Task<bool> IsValidInstallationAsync(string executable, Version expected,
+        (string Arguments, string Pattern) check, CancellationToken token)
     {
+        if (!File.Exists(executable))
+            return false;
+        try
+        {
+            await VerifyVersionAsync(executable, expected, check, token).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is InvalidDataException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException ||
+            ex is OperationCanceledException && !token.IsCancellationRequested)
+        {
+            Debug.WriteLine(ex);
+            return false;
+        }
+    }
+
+    private async Task VerifyVersionAsync(string executable, Version expected,
+        (string Arguments, string Pattern) check, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(10));
         ProcessStartInfo start = ToolProcess.CreateStartInfo(executable, _cacheDirectory);
-        start.Arguments = kind == MediaTool.Ffmpeg ? "-version" : "--ignore-config --version";
+        start.Arguments = check.Arguments;
         start.RedirectStandardOutput = true;
         start.RedirectStandardError = true;
         using var process = new Process { StartInfo = start };
@@ -495,8 +551,7 @@ public sealed class ToolUpdater
         {
             await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
             string stdout = await output.ConfigureAwait(false);
-            string pattern = kind == MediaTool.Ffmpeg ? @"\Affmpeg version ([0-9.]+)" : @"\A([0-9.]+)(?:\s|\z)";
-            Match actual = Regex.Match(stdout, pattern, RegexOptions.CultureInvariant);
+            Match actual = Regex.Match(stdout, check.Pattern, RegexOptions.CultureInvariant);
             if (process.ExitCode != 0 || !actual.Success || !Version.TryParse(actual.Groups[1].Value, out Version? version) ||
                 version != expected)
                 throw new InvalidDataException($"{Path.GetFileName(executable)} 报告的版本与预期 {expected} 不符。");
