@@ -36,6 +36,7 @@ public sealed partial class MainWindow : Window
         {
             SaveMediaSettings();
             PortableStorage.Log.Write(LogLevel.Information, "Application", "Live Recorder 已退出。");
+            PortableStorage.Log.FlushAsync().GetAwaiter().GetResult();
         };
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));

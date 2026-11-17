@@ -18,22 +18,25 @@ internal static class PortableStorage
 
     public static void Initialize()
     {
-        try
-        {
-            Directory.CreateDirectory(ToolsDirectory);
-            Directory.CreateDirectory(CacheDirectory);
-            Directory.CreateDirectory(LogsDirectory);
-            Configuration.Load(ToolsDirectory);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            InitializationError = ex;
-        }
+        InitializationError = null;
+        TryInitialize(() => Configuration.Load(ToolsDirectory));
+        TryInitialize(() => Directory.CreateDirectory(ToolsDirectory));
+        TryInitialize(() => Directory.CreateDirectory(CacheDirectory));
+        TryInitialize(() => Directory.CreateDirectory(LogsDirectory));
         Log.Configure(Configuration.Current.Logging);
         if (InitializationError is { } error)
             Log.Write(LogLevel.Warning, "Configuration", "无法初始化便携数据目录或读取配置。", error);
         if (Configuration.RecoveryBackup is { } backup)
             Log.Write(LogLevel.Warning, "Configuration", $"配置已恢复。原文件已备份到 {backup}。");
+
+        static void TryInitialize(Action action)
+        {
+            try { action(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                InitializationError ??= ex;
+            }
+        }
     }
 
     public static string DownloadsDirectory()
