@@ -78,6 +78,7 @@ public sealed class PortableConfiguration : IDisposable
     }
 
     public AppSettings Current => Volatile.Read(ref _current);
+    public string? RecoveryBackup { get; private set; }
 
     public void Load(string toolsDirectory)
     {
@@ -86,11 +87,11 @@ public sealed class PortableConfiguration : IDisposable
         {
             string oldFfmpeg = Path.Combine(toolsDirectory, "ffmpeg", "selected-version.txt");
             string oldYtDlp = Path.Combine(toolsDirectory, "yt-dlp", "selected-version.txt");
-            AppSettings? settings = Read();
+            AppSettings? settings = ReadForRecovery(out string? backup);
             if (settings is null)
             {
                 settings = new AppSettings { Tools = new ToolSettings(ReadLegacy(oldFfmpeg), ReadLegacy(oldYtDlp)) };
-                Save(settings);
+                Save(settings, backup);
             }
             Volatile.Write(ref _current, settings);
             RemoveLegacy(oldFfmpeg);
@@ -104,13 +105,25 @@ public sealed class PortableConfiguration : IDisposable
         PortableFileMutex.Enter(_mutex);
         try
         {
-            AppSettings settings = Read() ?? Current;
+            AppSettings settings = ReadForRecovery(out string? backup) ?? Current;
             AppSettings next = Normalize(update(settings));
-            if (settings != next)
-                Save(next);
+            if (settings != next || backup is not null || !File.Exists(_path))
+                Save(next, backup);
             Volatile.Write(ref _current, next);
         }
         finally { _mutex.ReleaseMutex(); }
+    }
+
+    private AppSettings? ReadForRecovery(out string? backup)
+    {
+        backup = null;
+        try { return Read(); }
+        catch (JsonException)
+        {
+            backup = Path.Combine(_directory, FormattableString.Invariant(
+                $"settings-broken-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.json"));
+            return null;
+        }
     }
 
     private AppSettings? Read()
@@ -134,7 +147,7 @@ public sealed class PortableConfiguration : IDisposable
         catch (DirectoryNotFoundException) { return null; }
     }
 
-    private void Save(AppSettings settings)
+    private void Save(AppSettings settings, string? backup)
     {
         Directory.CreateDirectory(_directory);
         string pending = Path.Combine(_directory, $".settings-{Guid.NewGuid():N}.tmp");
@@ -142,7 +155,13 @@ public sealed class PortableConfiguration : IDisposable
         {
             using (var file = new FileStream(pending, FileMode.CreateNew, FileAccess.Write))
                 JsonSerializer.Serialize(file, settings, Json);
-            File.Move(pending, _path, overwrite: true);
+            if (backup is null)
+                File.Move(pending, _path, overwrite: true);
+            else
+            {
+                File.Replace(pending, _path, backup);
+                RecoveryBackup = backup;
+            }
         }
         finally { File.Delete(pending); }
     }

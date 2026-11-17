@@ -30,6 +30,8 @@ public sealed partial class MainWindow : Window
         RestoreMediaSettings();
         if (PortableStorage.InitializationError is { } error)
             SetStatus("无法载入便携配置", error.Message, LogLevel.Warning);
+        else if (PortableStorage.Configuration.RecoveryBackup is { } backup)
+            SetStatus("配置已恢复", $"原文件已备份到 {backup}。", LogLevel.Warning);
         Closed += (_, _) =>
         {
             SaveMediaSettings();

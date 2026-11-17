@@ -8,6 +8,7 @@ namespace LiveRecorder;
 public sealed partial class MainWindow
 {
     private string _defaultOutput = "";
+    private bool _restoringReconnectSettings;
 
     private void RestoreMediaSettings()
     {
@@ -37,6 +38,8 @@ public sealed partial class MainWindow
 
     private void RecordingReconnectSetting_Changed(NumberBox sender, NumberBoxValueChangedEventArgs e)
     {
+        if (_restoringReconnectSettings)
+            return;
         if (!IsIntegerInRange(e.NewValue, 1, (int)sender.Maximum))
         {
             sender.Value = e.OldValue;
@@ -51,6 +54,15 @@ public sealed partial class MainWindow
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
+            RecordingReconnectSettings saved = PortableStorage.Configuration.Current.Media.Reconnect;
+            _restoringReconnectSettings = true;
+            try
+            {
+                RecordingStallBox.Value = saved.StallSeconds;
+                RecordingRetryBox.Value = saved.RetrySeconds;
+                RecordingWaitBox.Value = saved.MaxWaitMinutes;
+            }
+            finally { _restoringReconnectSettings = false; }
             SetStatus("无法保存重连设置", ex.Message, LogLevel.Error, ex);
         }
     }

@@ -32,6 +32,8 @@ internal static class PortableStorage
         Log.Configure(Configuration.Current.Logging);
         if (InitializationError is { } error)
             Log.Write(LogLevel.Warning, "Configuration", "无法初始化便携数据目录或读取配置。", error);
+        if (Configuration.RecoveryBackup is { } backup)
+            Log.Write(LogLevel.Warning, "Configuration", $"配置已恢复。原文件已备份到 {backup}。");
     }
 
     public static string DownloadsDirectory()
