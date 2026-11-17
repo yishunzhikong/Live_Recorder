@@ -49,7 +49,8 @@ public sealed partial class MainWindow
             if (source.Scheme is "http" or "https")
                 return MediaSource.CreateFromUri(source);
 
-            session.Relay = await LivePreview.StartAsync((directory, token) => _media.CreateLivePreviewAsync(source, directory, token),
+            session.Relay = await LivePreview.StartAsync(PortableStorage.CacheDirectory,
+                (directory, token) => _media.CreateLivePreviewAsync(source, directory, token),
                 session.Cancellation.Token);
             return MediaSource.CreateFromUri(session.Relay.Playlist);
         });
@@ -58,7 +59,7 @@ public sealed partial class MainWindow
     private Task PreviewWebAudioAsync(WebVideoLink audio) => OpenPreviewAsync(audio.Label, null, async session =>
     {
         PreviewMessage.Text = "正在缓冲音频…";
-        session.Relay = await LivePreview.StartAsync(
+        session.Relay = await LivePreview.StartAsync(PortableStorage.CacheDirectory,
             (directory, token) => _media.CreateAudioPreviewAsync(_webAnalyzer, audio, directory, token),
             session.Cancellation.Token);
         return MediaSource.CreateFromUri(session.Relay.Playlist);

@@ -23,18 +23,20 @@ internal sealed class LivePreview : IAsyncDisposable
     public Uri Playlist { get; private set; } = null!;
     public Task Completion => _conversion;
 
-    public static async Task<LivePreview> StartAsync(Func<string, CancellationToken, Task> convert, CancellationToken token)
+    public static async Task<LivePreview> StartAsync(string cacheDirectory, Func<string, CancellationToken, Task> convert,
+        CancellationToken token)
     {
-        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
+        var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [], ContentRootPath = AppContext.BaseDirectory });
         builder.Logging.ClearProviders();
         builder.WebHost.ConfigureKestrel(server => server.Listen(IPAddress.Loopback, 0));
         var server = builder.Build();
-        string directory = Directory.CreateTempSubdirectory("LiveRecorder-").FullName;
+        string directory = Path.Combine(cacheDirectory, $"preview-{Guid.NewGuid():N}");
         var preview = new LivePreview(directory, server, token);
         string prefix = "/" + Guid.NewGuid().ToString("N");
 
         try
         {
+            Directory.CreateDirectory(directory);
             server.MapGet(prefix + "/stream.m3u8", () => ReadFile("stream.m3u8", "application/vnd.apple.mpegurl"));
             server.MapGet(prefix + "/{segment}", (string segment) =>
                 segment.Length == 19 && segment.StartsWith("segment-", StringComparison.Ordinal) &&
@@ -87,5 +89,6 @@ internal sealed class LivePreview : IAsyncDisposable
         await _server.DisposeAsync();
         try { Directory.Delete(_directory, recursive: true); }
         catch (IOException) { /* A media reader may still be releasing a segment. */ }
+        catch (UnauthorizedAccessException) { /* A media reader may still be releasing a segment. */ }
     }
 }

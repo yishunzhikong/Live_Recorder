@@ -8,7 +8,7 @@ namespace LiveRecorder.Core;
 public sealed record WebVideoLink(string Label, string Url, bool AudioOnly, string PageUrl, string? FormatId, bool IsLive);
 public sealed record WebVideoAnalysis(string Title, IReadOnlyList<WebVideoLink> Links);
 
-public sealed class WebVideoAnalyzer(string executable, string deno)
+public sealed class WebVideoAnalyzer(string? executable, string deno, string cacheDirectory)
 {
     public async Task<WebVideoAnalysis> AnalyzeAsync(string address, CancellationToken token)
     {
@@ -39,11 +39,11 @@ public sealed class WebVideoAnalyzer(string executable, string deno)
         }
     }
 
-    public async Task<string> DownloadAudioAsync(WebVideoLink link, string directory, string ffmpeg, CancellationToken token)
+    public async Task<string> DownloadAudioAsync(WebVideoLink link, string directory, string? ffmpeg, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
         using var process = CreateProcess(
-            [.. AudioOptions(link, ffmpeg), "--extract-audio", "--audio-format", "m4a",
+            [.. AudioOptions(link, ToolProcess.RequireExecutable(ffmpeg, "FFmpeg")), "--extract-audio", "--audio-format", "m4a",
                 "--output", "audio.%(ext)s", "--quiet"],
             link.PageUrl, Path.GetFullPath(directory));
         Start(process);
@@ -106,19 +106,10 @@ public sealed class WebVideoAnalyzer(string executable, string deno)
 
     private Process CreateProcess(string[] options, string address, string? directory = null)
     {
-        var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = executable,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                WorkingDirectory = directory ?? "",
-                StandardErrorEncoding = Encoding.UTF8
-            }
-        };
+        ProcessStartInfo start = ToolProcess.CreateStartInfo(RequireExecutable(), cacheDirectory, directory);
+        start.RedirectStandardOutput = true;
+        start.RedirectStandardError = true;
+        start.StandardErrorEncoding = Encoding.UTF8;
         string[] arguments =
         [
             "--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-playlist", "--playlist-items", "1",
@@ -126,14 +117,22 @@ public sealed class WebVideoAnalyzer(string executable, string deno)
             "--js-runtimes", "deno:" + deno, .. options, "--", address
         ];
         foreach (string argument in arguments)
-            process.StartInfo.ArgumentList.Add(argument);
-        return process;
+            start.ArgumentList.Add(argument);
+        return new Process { StartInfo = start };
+    }
+
+    internal string RequireExecutable()
+    {
+        string ytDlp = ToolProcess.RequireExecutable(executable, "yt-dlp");
+        if (!File.Exists(deno))
+            throw new InvalidOperationException("缺少 Deno。请在「工具」菜单中选择「安装 / 升级 yt-dlp」。");
+        return ytDlp;
     }
 
     private static void Start(Process process)
     {
         try { process.Start(); }
-        catch (Win32Exception ex) { throw new InvalidOperationException("无法启动内置 yt-dlp，请重新完整解压发布包。", ex); }
+        catch (Win32Exception ex) { throw new InvalidOperationException("无法启动 yt-dlp，请在「工具」菜单中检查安装。", ex); }
     }
 
     private static async Task WaitForSuccessAsync(Process process, Task<string> errors, string fallback, CancellationToken token)

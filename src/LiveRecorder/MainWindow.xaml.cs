@@ -10,9 +10,8 @@ namespace LiveRecorder;
 
 public sealed partial class MainWindow : Window
 {
-    private static readonly string BundledFfmpeg = Path.Combine(AppContext.BaseDirectory, "ffmpeg", "ffmpeg.exe");
     private readonly nint _handle;
-    private readonly MediaService _media = new(BundledFfmpeg);
+    private MediaService _media;
     private CancellationTokenSource? _operation;
     private ContentDialog? _mergePrompt;
     private string? _lastResultFolder;
@@ -22,13 +21,20 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
+        (_media, _webAnalyzer, _ffmpegPath) = ResolveMediaTools();
         InitializeComponent();
         _handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        string videos = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
-        if (string.IsNullOrWhiteSpace(videos))
-            videos = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        OutputBox.Text = Path.Combine(videos, "Live Recorder");
+        OutputBox.Text = PortableStorage.DownloadsDirectory();
         StatusDetail.Text = "粘贴媒体链接，或选择要处理的本地文件。";
+        try
+        {
+            Directory.CreateDirectory(PortableStorage.ToolsDirectory);
+            Directory.CreateDirectory(PortableStorage.CacheDirectory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetStatus("无法创建便携数据目录", $"请确认程序目录可写。{Environment.NewLine}{ex.Message}");
+        }
         ModeBox.SelectionChanged += Mode_SelectionChanged;
         SourceBox.TextChanged += (_, _) => UpdateRecordButton();
 
@@ -123,7 +129,7 @@ public sealed partial class MainWindow : Window
 
     private async Task<string?> PickFolderAsync()
     {
-        var picker = new FolderPicker { SuggestedStartLocation = PickerLocationId.VideosLibrary };
+        var picker = new FolderPicker { SuggestedStartLocation = PickerLocationId.Downloads };
         picker.FileTypeFilter.Add("*");
         WinRT.Interop.InitializeWithWindow.Initialize(picker, _handle);
         return (await picker.PickSingleFolderAsync())?.Path;
@@ -295,7 +301,7 @@ public sealed partial class MainWindow : Window
 
     private async void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        if (_operation is null && _preview is null && _previewCleanup.IsCompleted)
+        if (_operation is null && _toolVersionsDialog is null && _preview is null && _previewCleanup.IsCompleted)
             return;
         args.Cancel = true;
         if (_closeWhenIdle)
@@ -303,13 +309,16 @@ public sealed partial class MainWindow : Window
         _closeWhenIdle = true;
         _mergePrompt?.Hide();
         RequestStop();
-        await StopPreviewAsync();
+        Task previewCleanup = StopPreviewAsync();
+        _toolVersionsDialog?.CancelAndClose();
+        await previewCleanup;
         CloseWhenReady();
     }
 
     private void CloseWhenReady()
     {
-        if (!_closeWhenIdle || _closingAfterCleanup || _operation is not null || !_previewCleanup.IsCompleted)
+        if (!_closeWhenIdle || _closingAfterCleanup || _operation is not null ||
+            _toolVersionsDialog is not null || !_previewCleanup.IsCompleted)
             return;
         _closingAfterCleanup = true;
         Close();
@@ -328,6 +337,7 @@ public sealed partial class MainWindow : Window
 
     private void SetControlsEnabled(bool enabled)
     {
+        ToolsMenu.IsEnabled = enabled;
         foreach (Control control in new Control[] { ModeBox, WebSourceBox, AnalyzeWebButton,
             SourceBox, PreviewLinkButton, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
             EncoderBox, DeinterlaceBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })

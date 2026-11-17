@@ -25,7 +25,8 @@ internal static partial class RecordingParts
         return files;
     }
 
-    public static async Task SplitAsync(Stream source, string directory, long maximumBytes, IProgress<MediaProgress>? progress)
+    public static async Task SplitAsync(Stream source, string directory, string cacheDirectory,
+        long maximumBytes, IProgress<MediaProgress>? progress)
     {
         long limit = maximumBytes / PacketSize * PacketSize;
         byte[] buffer = new byte[BufferSize];
@@ -33,7 +34,7 @@ internal static partial class RecordingParts
         long total = 0;
         int buffered = 0;
         FileStream? destination = null;
-        string? incompletePath = null;
+        string incompletePath = Path.Combine(cacheDirectory, $"record-{Guid.NewGuid():N}.part");
         try
         {
             while (true)
@@ -48,7 +49,6 @@ internal static partial class RecordingParts
                 {
                     if (destination is null)
                     {
-                        incompletePath = Path.Combine(directory, $"part-{partNumber + 1:D8}.ts.part");
                         destination = new FileStream(incompletePath, FileMode.CreateNew, FileAccess.Write, FileShare.Read,
                             BufferSize, FileOptions.Asynchronous);
                     }
@@ -69,13 +69,14 @@ internal static partial class RecordingParts
         {
             if (destination is not null)
                 await destination.DisposeAsync().ConfigureAwait(false);
+            File.Delete(incompletePath);
         }
 
         async Task FinishPartAsync()
         {
             await destination!.DisposeAsync().ConfigureAwait(false);
             destination = null;
-            File.Move(incompletePath!, Path.ChangeExtension(incompletePath!, null));
+            File.Move(incompletePath, Path.Combine(directory, $"part-{partNumber + 1:D8}.ts"));
             partNumber++;
             progress?.Report(new MediaProgress(Bytes: total, Parts: partNumber));
         }

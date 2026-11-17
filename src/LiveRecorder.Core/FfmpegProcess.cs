@@ -7,7 +7,8 @@ namespace LiveRecorder.Core;
 internal static class FfmpegProcess
 {
     public static async Task RunAsync(
-        string executable,
+        string? executable,
+        string cacheDirectory,
         IEnumerable<string> arguments,
         IProgress<MediaProgress>? progress,
         CancellationToken cancellationToken,
@@ -16,19 +17,12 @@ internal static class FfmpegProcess
         bool finishOnCancellation = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        using var process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = executable,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = readOutput is not null,
-                RedirectStandardError = true,
-                StandardErrorEncoding = Encoding.UTF8
-            }
-        };
+        ProcessStartInfo start = ToolProcess.CreateStartInfo(ToolProcess.RequireExecutable(executable, "FFmpeg"), cacheDirectory);
+        start.RedirectStandardInput = true;
+        start.RedirectStandardOutput = readOutput is not null;
+        start.RedirectStandardError = true;
+        start.StandardErrorEncoding = Encoding.UTF8;
+        using var process = new Process { StartInfo = start };
         foreach (string argument in new[] { "-hide_banner", "-loglevel", "warning", "-nostats" })
             process.StartInfo.ArgumentList.Add(argument);
         if (progress is not null)
@@ -42,7 +36,7 @@ internal static class FfmpegProcess
         try { process.Start(); }
         catch (System.ComponentModel.Win32Exception ex)
         {
-            throw new InvalidOperationException("无法启动内置 FFmpeg，请重新完整解压发布包。", ex);
+            throw new InvalidOperationException("无法启动 FFmpeg，请在「工具」菜单中检查安装。", ex);
         }
 
         using var exitMonitoring = new CancellationTokenSource();
