@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using LiveRecorder.Core;
 using Microsoft.UI.Windowing;
 using Windows.Graphics;
 
@@ -24,18 +25,18 @@ internal static class WindowAspect
         }
         window.MoveAndResize(new RectInt32(workArea.X + (workArea.Width - 16 * unit) / 2,
             workArea.Y + (workArea.Height - 9 * unit) / 2, 16 * unit, 9 * unit));
-        SetWindowSubclass(handle, Resize, 1, (nuint)minimumUnit);
+        if (!SetWindowSubclass(handle, Resize, 1, (nuint)minimumUnit))
+            PortableStorage.Log.Write(LogLevel.Warning, "Window", "无法启用 16:9 拖动约束，窗口将使用系统调整大小。");
     }
 
     private static nint OnWindowMessage(nint handle, uint message, nuint edge, nint parameter, nuint id, nuint minimumUnit)
     {
         if (message == WmNcDestroy)
             RemoveWindowSubclass(handle, Resize, id);
-        if (message != WmSizing)
+        if (message != WmSizing || parameter == nint.Zero || !GetWindowRect(handle, out WindowRect current))
             return DefSubclassProc(handle, message, edge, parameter);
 
         var rect = Marshal.PtrToStructure<WindowRect>(parameter);
-        GetWindowRect(handle, out WindowRect current);
         double widthUnits = (rect.Right - rect.Left) / 16d;
         double heightUnits = (rect.Bottom - rect.Top) / 9d;
         double widthChange = Math.Abs(widthUnits - (current.Right - current.Left) / 16d);
