@@ -1,10 +1,10 @@
 # Live Recorder
 
-Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视频下载和录制工具。v1.0.0 提供「直播录制」和「yt-dlp」两种模式，支持 Windows 10 2004（19041）及以上版本和 Windows 11 的 x64 系统。
+Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视频下载和录制工具。v1.0.1 提供「直播录制」和「yt-dlp」两种模式，支持 Windows 10 2004（19041）及以上版本和 Windows 11 的 x64 系统。
 
 ## 运行发布版
 
-完整解压 `LiveRecorder-v1.0.0-win-x64.zip`，打开解压后的 `LiveRecorder-v1.0.0-win-x64` 文件夹并双击 `LiveRecorder.exe`。程序会自动使用随包附带的 FFmpeg、yt-dlp 和 Deno。
+完整解压 `LiveRecorder-v1.0.1-win-x64.zip`，打开解压后的 `LiveRecorder-v1.0.1-win-x64` 文件夹并双击 `LiveRecorder.exe`。程序会自动使用随包附带的 FFmpeg、yt-dlp 和 Deno。
 
 ## 直播录制
 
@@ -21,7 +21,7 @@ Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视�
 
 ## yt-dlp
 
-切换到「yt-dlp」，粘贴网页地址并点击「分析链接」。在「媒体格式」中选定一项后，可用右侧的「预览链接」或「下载视频」，也可在左侧点击「复制直链」。选择「音频」格式时，yt-dlp 会下载所选音轨，再准备为 M4A 供预览或保存。下载文件按完成时间命名，例如 `audio_20261117_020000.m4a`，同名时追加 ` (2)`、` (3)`。音频预览开始前需要等待文件处理完成。直链可能过期，也可能需要原网站的请求头。
+切换到「yt-dlp」，粘贴网页地址并点击「分析链接」。在「媒体格式」中选定一项后，可用右侧的「预览链接」或「下载视频」，也可在左侧点击「复制直链」。选择「音频」格式时，「预览链接」会缓冲并在线播放所选音轨，「下载视频」则将音轨保存为 M4A。下载文件按完成时间命名，例如 `audio_20261117_020000.m4a`，同名时追加 ` (2)`、` (3)`。直链可能过期，也可能需要原网站的请求头。
 
 ## 保存和编码
 
@@ -39,9 +39,9 @@ Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视�
 
 ```powershell
 dotnet build src/LiveRecorder/LiveRecorder.csproj -c Release
-dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-v1.0.0-win-x64
-Copy-Item -LiteralPath README.md -Destination artifacts/LiveRecorder-v1.0.0-win-x64/
-tar.exe -a -cf artifacts/LiveRecorder-v1.0.0-win-x64.zip --exclude='*.pdb' -C artifacts LiveRecorder-v1.0.0-win-x64
+dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-v1.0.1-win-x64
+Copy-Item -LiteralPath README.md -Destination artifacts/LiveRecorder-v1.0.1-win-x64/
+tar.exe -a -cf artifacts/LiveRecorder-v1.0.1-win-x64.zip --exclude='*.pdb' -C artifacts LiveRecorder-v1.0.1-win-x64
 ```
 
 首次构建时会自动下载并校验固定版本的 FFmpeg、yt-dlp 和 Deno。发布目录包含这些依赖以及 .NET 和 Windows App SDK 运行时。目标机器还需 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。

@@ -1,5 +1,4 @@
 using System.Net;
-using LiveRecorder.Core;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -24,7 +23,7 @@ internal sealed class LivePreview : IAsyncDisposable
     public Uri Playlist { get; private set; } = null!;
     public Task Completion => _conversion;
 
-    public static async Task<LivePreview> StartAsync(MediaService media, Uri input, CancellationToken token)
+    public static async Task<LivePreview> StartAsync(Func<string, CancellationToken, Task> convert, CancellationToken token)
     {
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [] });
         builder.Logging.ClearProviders();
@@ -43,7 +42,7 @@ internal sealed class LivePreview : IAsyncDisposable
                     ? ReadFile(segment, "video/mp2t") : Results.NotFound());
             await server.StartAsync(token);
             preview.Playlist = new Uri(server.Urls.Single() + prefix + "/stream.m3u8");
-            preview._conversion = media.CreateLivePreviewAsync(input, directory, preview._conversionToken.Token);
+            preview._conversion = convert(directory, preview._conversionToken.Token);
 
             using var startup = CancellationTokenSource.CreateLinkedTokenSource(token);
             startup.CancelAfter(TimeSpan.FromSeconds(25));

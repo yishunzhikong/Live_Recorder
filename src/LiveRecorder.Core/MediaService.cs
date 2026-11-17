@@ -66,6 +66,20 @@ public sealed class MediaService(string ffmpeg)
                 Path.Combine(directory, "stream.m3u8")],
             null, token);
 
+    public Task CreateAudioPreviewAsync(WebVideoAnalyzer analyzer, WebVideoLink link, string directory, CancellationToken token)
+    {
+        string[] playlist = link.IsLive
+            ? ["-hls_list_size", "6", "-hls_flags", "delete_segments+temp_file"]
+            : ["-hls_playlist_type", "event", "-hls_flags", "temp_file"];
+        return FfmpegProcess.RunAsync(ffmpeg,
+            ["-nostdin", "-protocol_whitelist", "pipe", "-readrate", "1", "-readrate_initial_burst", "4",
+                "-i", "pipe:0", "-map", "0:a:0", "-vn", "-sn", "-dn", "-c:a", "aac", "-b:a", "128k",
+                "-f", "hls", "-hls_time", "2", .. playlist,
+                "-hls_segment_filename", Path.Combine(directory, "segment-%08d.ts"),
+                Path.Combine(directory, "stream.m3u8")],
+            null, token, writeInput: (pipe, ct) => analyzer.StreamAudioAsync(link, directory, ffmpeg, pipe, ct));
+    }
+
     public Task<RecordingResult> RecordSdpAsync(string path, string directory, int partMegabytes, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic)
     {

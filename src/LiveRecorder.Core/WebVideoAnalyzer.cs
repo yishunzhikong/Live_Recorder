@@ -5,7 +5,7 @@ using System.Text.Json;
 
 namespace LiveRecorder.Core;
 
-public sealed record WebVideoLink(string Label, string Url, bool AudioOnly, string PageUrl, string? FormatId);
+public sealed record WebVideoLink(string Label, string Url, bool AudioOnly, string PageUrl, string? FormatId, bool IsLive);
 public sealed record WebVideoAnalysis(string Title, IReadOnlyList<WebVideoLink> Links);
 
 public sealed class WebVideoAnalyzer(string executable, string deno)
@@ -41,13 +41,9 @@ public sealed class WebVideoAnalyzer(string executable, string deno)
 
     public async Task<string> DownloadAudioAsync(WebVideoLink link, string directory, string ffmpeg, CancellationToken token)
     {
-        if (!link.AudioOnly || string.IsNullOrWhiteSpace(link.FormatId) || !IsHttpUrl(link.PageUrl))
-            throw new ArgumentException("请重新分析网页并选择有效的音频格式。");
         token.ThrowIfCancellationRequested();
-        string formatId = link.FormatId.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("'", "\\'", StringComparison.Ordinal);
         using var process = CreateProcess(
-            ["--format", $"best*[format_id='{formatId}']", "--no-simulate", "--abort-on-unavailable-fragments",
-                "--extract-audio", "--audio-format", "m4a", "--ffmpeg-location", ffmpeg,
+            [.. AudioOptions(link, ffmpeg), "--extract-audio", "--audio-format", "m4a",
                 "--output", "audio.%(ext)s", "--quiet"],
             link.PageUrl, Path.GetFullPath(directory));
         Start(process);
@@ -68,6 +64,44 @@ public sealed class WebVideoAnalyzer(string executable, string deno)
             Stop(process);
             await Task.WhenAll(output, errors).ConfigureAwait(false);
         }
+    }
+
+    public async Task StreamAudioAsync(WebVideoLink link, string directory, string ffmpeg, Stream destination,
+        CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        using var process = CreateProcess(
+            [.. AudioOptions(link, ffmpeg), "--output", "-", "--no-part", "--quiet",
+                // Let FFmpeg seek over HTTP when a file puts its index at the end.
+                "--downloader", "http:ffmpeg",
+                "--downloader-args", "ffmpeg_i:-rw_timeout 15000000",
+                "--downloader-args", "ffmpeg_o:-f matroska"],
+            link.PageUrl, directory);
+        process.StartInfo.Environment["PATH"] = Path.GetDirectoryName(Path.GetFullPath(ffmpeg)) + Path.PathSeparator
+            + Environment.GetEnvironmentVariable("PATH");
+        Start(process);
+
+        using var cancellation = token.UnsafeRegister(static state => Stop((Process)state!), process);
+        Task<string> errors = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.StandardOutput.BaseStream.CopyToAsync(destination, token).ConfigureAwait(false);
+            await WaitForSuccessAsync(process, errors, "yt-dlp 无法在线播放所选音频。", token).ConfigureAwait(false);
+        }
+        finally
+        {
+            Stop(process);
+            await errors.ConfigureAwait(false);
+        }
+    }
+
+    private static string[] AudioOptions(WebVideoLink link, string ffmpeg)
+    {
+        if (!link.AudioOnly || string.IsNullOrWhiteSpace(link.FormatId) || !IsHttpUrl(link.PageUrl))
+            throw new ArgumentException("请重新分析网页并选择有效的音频格式。");
+        string formatId = link.FormatId.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("'", "\\'", StringComparison.Ordinal);
+        return ["--format", $"best*[format_id='{formatId}']", "--no-simulate", "--abort-on-unavailable-fragments",
+            "--ffmpeg-location", ffmpeg];
     }
 
     private Process CreateProcess(string[] options, string address, string? directory = null)
@@ -129,6 +163,7 @@ public sealed class WebVideoAnalyzer(string executable, string deno)
 
         string? page = StringProperty(media, "webpage_url");
         string pageUrl = page is not null && IsHttpUrl(page) ? page : address;
+        bool isLive = media.TryGetProperty("is_live", out JsonElement live) && live.ValueKind == JsonValueKind.True;
         var candidates = new List<(WebVideoLink Link, int Order)>();
         if (media.TryGetProperty("formats", out JsonElement formats) && formats.ValueKind == JsonValueKind.Array)
         {
@@ -171,7 +206,7 @@ public sealed class WebVideoAnalyzer(string executable, string deno)
                 ? $"{height.GetRawText()}p" : StringProperty(format, "format_note");
             string? formatId = StringProperty(format, "format_id");
             string label = string.Join(" · ", new[] { role, resolution, extension?.ToUpperInvariant(), formatId }.OfType<string>());
-            candidates.Add((new WebVideoLink(label, url, video == "none", pageUrl, formatId), order));
+            candidates.Add((new WebVideoLink(label, url, video == "none", pageUrl, formatId, isLive), order));
         }
     }
 

@@ -20,7 +20,6 @@ public sealed partial class MainWindow
         public CancellationTokenSource Cancellation { get; } = new();
         public Task Startup { get; set; } = Task.CompletedTask;
         public LivePreview? Relay { get; set; }
-        public DirectoryInfo? AudioFiles { get; set; }
         public MediaSource? Source { get; set; }
         public MediaPlayer? Player { get; set; }
         public Action? StopTrackObservation { get; set; }
@@ -50,18 +49,19 @@ public sealed partial class MainWindow
             if (source.Scheme is "http" or "https")
                 return MediaSource.CreateFromUri(source);
 
-            session.Relay = await LivePreview.StartAsync(_media, source, session.Cancellation.Token);
+            session.Relay = await LivePreview.StartAsync((directory, token) => _media.CreateLivePreviewAsync(source, directory, token),
+                session.Cancellation.Token);
             return MediaSource.CreateFromUri(session.Relay.Playlist);
         });
     }
 
     private Task PreviewWebAudioAsync(WebVideoLink audio) => OpenPreviewAsync(audio.Label, null, async session =>
     {
-        PreviewMessage.Text = "正在下载并准备音频预览…";
-        session.AudioFiles = Directory.CreateTempSubdirectory("LiveRecorder-Audio-");
-        string path = await _webAnalyzer.DownloadAudioAsync(audio, session.AudioFiles.FullName, BundledFfmpeg, session.Cancellation.Token);
-        StorageFile file = await StorageFile.GetFileFromPathAsync(path).AsTask(session.Cancellation.Token);
-        return MediaSource.CreateFromStorageFile(file);
+        PreviewMessage.Text = "正在缓冲音频…";
+        session.Relay = await LivePreview.StartAsync(
+            (directory, token) => _media.CreateAudioPreviewAsync(_webAnalyzer, audio, directory, token),
+            session.Cancellation.Token);
+        return MediaSource.CreateFromUri(session.Relay.Playlist);
     });
 
     private async void PlayFile_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
@@ -219,11 +219,6 @@ public sealed partial class MainWindow
                 await session.Relay.DisposeAsync();
         }
         catch (Exception ex) { System.Diagnostics.Debug.WriteLine(ex); }
-        finally
-        {
-            if (session.AudioFiles is not null)
-                DeleteWebAudioFiles(session.AudioFiles);
-            session.Cancellation.Dispose();
-        }
+        finally { session.Cancellation.Dispose(); }
     }
 }
