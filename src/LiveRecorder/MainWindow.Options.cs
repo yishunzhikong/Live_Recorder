@@ -363,5 +363,5 @@ public sealed partial class MainWindow
     };
 
     private static bool IsIntegerInRange(double value, int minimum, int maximum) =>
-        value >= minimum && value <= maximum && value == Math.Truncate(value);
+        double.IsInteger(value) && value >= minimum && value <= maximum;
 }
