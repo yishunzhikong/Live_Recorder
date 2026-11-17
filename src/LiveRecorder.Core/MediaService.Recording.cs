@@ -8,6 +8,8 @@ namespace LiveRecorder.Core;
 public sealed record RecordingFolder(string Directory, int PartCount, bool Reencoded);
 public sealed record RecordingResult(IReadOnlyList<RecordingFolder> Folders, string? Interruption);
 public sealed record RecordingEvent(DateTimeOffset Time, bool Recovered, string Detail);
+public sealed record RecordingOptions(int PartMegabytes, VideoEncoder Encoder, DeinterlaceMode Deinterlace = DeinterlaceMode.Automatic,
+    EncodingSettings? Encoding = null, RecordingReconnectSettings? Reconnect = null);
 
 public sealed record RecordingReconnectSettings(int StallSeconds = 10, int RetrySeconds = 2, int MaxWaitMinutes = 3)
 {
@@ -28,30 +30,38 @@ public sealed partial class MediaService
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
         EncodingSettings? settings = null, bool? live = null, IProgress<RecordingEvent>? events = null,
         RecordingReconnectSettings? reconnect = null, MediaRequestHeaders? headers = null) =>
-        RecordSessionAsync(NetworkInput(source, headers: headers), source, live, directory, partMegabytes, encoder, progress, token,
-            deinterlace, settings, events, reconnect, headers);
+        RecordAsync(source, directory, new RecordingOptions(partMegabytes, encoder, deinterlace, settings, reconnect),
+            progress, token, live, events, headers);
+
+    public Task<RecordingResult> RecordAsync(Uri source, string directory, RecordingOptions options, IProgress<MediaProgress>? progress,
+        CancellationToken token, bool? live = null, IProgress<RecordingEvent>? events = null, MediaRequestHeaders? headers = null) =>
+        RecordSessionAsync(NetworkInput(source, headers: headers), source, live, directory, options, progress, token, events, headers);
 
     public Task<RecordingResult> RecordSdpAsync(string path, string directory, int partMegabytes, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
-        EncodingSettings? settings = null, IProgress<RecordingEvent>? events = null, RecordingReconnectSettings? reconnect = null)
+        EncodingSettings? settings = null, IProgress<RecordingEvent>? events = null, RecordingReconnectSettings? reconnect = null) =>
+        RecordSdpAsync(path, directory, new RecordingOptions(partMegabytes, encoder, deinterlace, settings, reconnect),
+            progress, token, events);
+
+    public Task<RecordingResult> RecordSdpAsync(string path, string directory, RecordingOptions options,
+        IProgress<MediaProgress>? progress, CancellationToken token, IProgress<RecordingEvent>? events = null)
     {
         if (!Path.GetExtension(path).Equals(".sdp", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
             throw new ArgumentException("请选择有效的本地 SDP 文件。");
         return RecordSessionAsync(["-protocol_whitelist", "file,udp,rtp", "-f", "sdp", "-i", Path.GetFullPath(path)],
-            null, true, directory, partMegabytes, encoder, progress, token, deinterlace, settings, events, reconnect, null);
+            null, true, directory, options, progress, token, events, null);
     }
 
     private async Task<RecordingResult> RecordSessionAsync(string[] input, Uri? source, bool? live, string directory,
-        int partMegabytes, VideoEncoder encoder, IProgress<MediaProgress>? progress, CancellationToken token,
-        DeinterlaceMode deinterlace, EncodingSettings? settings, IProgress<RecordingEvent>? events,
-        RecordingReconnectSettings? reconnect, MediaRequestHeaders? headers)
+        RecordingOptions options, IProgress<MediaProgress>? progress, CancellationToken token, IProgress<RecordingEvent>? events,
+        MediaRequestHeaders? headers)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(partMegabytes, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(partMegabytes, 1024);
+        ArgumentOutOfRangeException.ThrowIfLessThan(options.PartMegabytes, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.PartMegabytes, 1024);
         token.ThrowIfCancellationRequested();
         string executable = ToolProcess.RequireExecutable(ffmpeg, "FFmpeg");
         Directory.CreateDirectory(cacheDirectory);
-        RecordingReconnectSettings timing = (reconnect ?? new()).Normalize();
+        RecordingReconnectSettings timing = (options.Reconnect ?? new()).Normalize();
         TimeSpan stall = TimeSpan.FromSeconds(timing.StallSeconds);
         TimeSpan retryDelay = TimeSpan.FromSeconds(timing.RetrySeconds);
         TimeSpan reconnectLimit = TimeSpan.FromMinutes(timing.MaxWaitMinutes);
@@ -146,8 +156,7 @@ public sealed partial class MediaService
                     attemptInput = ["-f", "hls", "-http_multiple", "0", "-protocol_whitelist", "file,http,https,httpproxy,tcp,tls",
                         "-rw_timeout", DefaultTimeoutMicroseconds.ToString(CultureInfo.InvariantCulture), "-i", Path.GetFullPath(tailPlaylist)];
                 }
-                attempt = await RecordSegmentAsync(executable, attemptInput, directory, partMegabytes, encoder,
-                    progress, token, deinterlace, settings ?? DefaultTranscodeSettings, onRestored,
+                attempt = await RecordSegmentAsync(executable, attemptInput, directory, options, progress, token, onRestored,
                     startupWait < stall ? startupWait : stall, stall, http).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
@@ -250,9 +259,9 @@ public sealed partial class MediaService
         return File.WriteAllTextAsync(path, playlist.ToString(), token);
     }
 
-    private async Task<RecordingAttempt> RecordSegmentAsync(string executable, string[] input, string directory, int partMegabytes,
-        VideoEncoder encoder, IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace,
-        EncodingSettings settings, Action<DateTimeOffset, string>? onRestored, TimeSpan startupWait, TimeSpan stall, bool trackHls)
+    private async Task<RecordingAttempt> RecordSegmentAsync(string executable, string[] input, string directory, RecordingOptions options,
+        IProgress<MediaProgress>? progress, CancellationToken token, Action<DateTimeOffset, string>? onRestored,
+        TimeSpan startupWait, TimeSpan stall, bool trackHls)
     {
         string? recordingDirectory = null;
         string[] codecs = ["-c", "copy"];
@@ -284,7 +293,7 @@ public sealed partial class MediaService
                         ["-loglevel", trackHls ? "verbose" : "info", .. input, .. MapStreams(), .. codecs, "-f", "mpegts", "pipe:1"],
                         progress, watch.Token,
                         readOutput: stream => RecordingParts.SplitAsync(stream, BeginFolder, cacheDirectory,
-                            partMegabytes * 1_000_000L, progress, () =>
+                            options.PartMegabytes * 1_000_000L, progress, () =>
                             {
                                 lastMediaAt = DateTimeOffset.Now;
                                 watch.CancelAfter(stall);
@@ -306,6 +315,7 @@ public sealed partial class MediaService
                         throw;
                     convertVideo |= ex.Video;
                     convertAudio |= !ex.Video;
+                    EncodingSettings settings = options.Encoding ?? DefaultTranscodeSettings;
                     EncodingSettings fallback = settings with
                     {
                         KeepVideoFormat = !convertVideo && settings.KeepVideoFormat,
@@ -314,7 +324,7 @@ public sealed partial class MediaService
                         KeepAudioFormat = !convertAudio && settings.KeepAudioFormat,
                         KeepAudioBitrate = settings.KeepAudioBitrate && (!convertAudio || streams.AudioBitrate is not null)
                     };
-                    codecs = EncodingArguments.Create(encoder, deinterlace, fallback, streams, forceVideo: convertVideo);
+                    codecs = EncodingArguments.Create(options.Encoder, options.Deinterlace, fallback, streams, forceVideo: convertVideo);
                     streams = new SourceEncodingInfo();
                     requestedSegments.Clear();
                 }

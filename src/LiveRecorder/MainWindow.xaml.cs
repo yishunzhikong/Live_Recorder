@@ -65,9 +65,9 @@ public sealed partial class MainWindow : Window
         if (source.Scheme is "rtp" or "udp")
             await ReleaseDatagramPreviewAsync(source);
         WebVideoLink? format = SelectedWebFormat;
-        RecordingResult recording = await _media.RecordAsync(source, directory, settings.PartSizeMb, settings.Encoder,
-            CreateProgress(), token, settings.Deinterlace, settings.Encoding, format?.IsLive, RecordingEvents(token),
-            _mode == AppMode.Live ? settings.Reconnect : null, format?.Headers);
+        RecordingOptions options = CreateRecordingOptions(settings, _mode == AppMode.Live);
+        RecordingResult recording = await _media.RecordAsync(source, directory, options, CreateProgress(), token,
+            format?.IsLive, RecordingEvents(token), format?.Headers);
         await FinishRecordingAsync(recording, directory, settings);
     });
 
@@ -81,11 +81,14 @@ public sealed partial class MainWindow : Window
             string directory = OutputDirectory();
             MediaSettings settings = PortableStorage.Configuration.Current.Media;
             await ReleaseDatagramPreviewAsync();
-            RecordingResult recording = await _media.RecordSdpAsync(file, directory, settings.PartSizeMb, settings.Encoder,
-                CreateProgress(), token, settings.Deinterlace, settings.Encoding, RecordingEvents(token), settings.Reconnect);
+            RecordingResult recording = await _media.RecordSdpAsync(file, directory, CreateRecordingOptions(settings, useReconnectSettings: true),
+                CreateProgress(), token, RecordingEvents(token));
             await FinishRecordingAsync(recording, directory, settings);
         });
     });
+
+    private static RecordingOptions CreateRecordingOptions(MediaSettings settings, bool useReconnectSettings) =>
+        new(settings.PartSizeMb, settings.Encoder, settings.Deinterlace, settings.Encoding, useReconnectSettings ? settings.Reconnect : null);
 
     private async void Merge_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
     {
@@ -198,10 +201,16 @@ public sealed partial class MainWindow : Window
         StartStage("合并中");
         int succeeded = 0;
         int failed = 0;
+        var results = new List<string>(folders.Count);
         foreach (RecordingFolder folder in folders)
         {
-            token.ThrowIfCancellationRequested();
-            SetStatus($"合并中（{succeeded + failed + 1}/{folders.Count}）", Path.GetFileName(folder.Directory));
+            string name = Path.GetFileName(folder.Directory);
+            if (token.IsCancellationRequested)
+            {
+                results.Add($"{name} · 未处理");
+                continue;
+            }
+            SetStatus($"合并中（{results.Count + 1}/{folders.Count}）", name);
             try
             {
                 string output = await _media.MergeAsync(folder.Directory, directory, settings.Encoder,
@@ -210,18 +219,25 @@ public sealed partial class MainWindow : Window
                 _lastResultFolder = Path.GetDirectoryName(output);
                 PlayResultButton.IsEnabled = true;
                 succeeded++;
+                results.Add($"{name} · 已合并为 {Path.GetFileName(output)}");
                 PortableStorage.Log.Write(LogLevel.Information, "Recording", $"已合并 {folder.Directory} → {output}");
             }
-            catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                results.Add($"{name} · 已停止，分片已保留");
+            }
+            catch (Exception ex)
             {
                 failed++;
+                results.Add($"{name} · 合并失败，分片已保留。{ex.Message}");
                 PortableStorage.Log.Write(LogLevel.Error, "Recording", $"合并失败，已保留分片。{folder.Directory}", ex);
             }
         }
         string result = $"已合并 {succeeded}/{folders.Count} 个录制文件夹。";
         if (failed > 0)
-            result += $" {failed} 个合并失败，分片已保留，详情见日志。";
-        SetStatus(failed > 0 ? "合并已结束" : "合并完成", $"{result}{Environment.NewLine}{directory}",
+            result += $" {failed} 个合并失败，分片已保留。";
+        string mergeTitle = token.IsCancellationRequested ? "合并已停止" : failed > 0 ? "合并已结束" : "合并完成";
+        SetStatus(mergeTitle, string.Join(Environment.NewLine, new[] { result, directory, "" }.Concat(results)),
             failed > 0 ? LogLevel.Warning : LogLevel.Information);
     }
 
