@@ -34,7 +34,9 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     public static async Task<bool> HasFixedPreviewDurationAsync(Uri source, CancellationToken token) =>
         (await InspectHttpMediaAsync(source, token).ConfigureAwait(false))?.HasFixedDuration == true;
 
-    private sealed record HttpMediaState(bool HasFixedDuration, string? LastHlsSegment = null);
+    private sealed record HlsSegment(Uri Uri, decimal? Duration);
+    private sealed record HttpMediaState(bool HasFixedDuration, long HlsSequence = 0, IReadOnlyList<HlsSegment>? HlsSegments = null,
+        bool CanTrimHls = false);
 
     private static async Task<HttpMediaState?> InspectHttpMediaAsync(Uri source, CancellationToken token)
     {
@@ -86,14 +88,23 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         Uri? variant = null;
         bool variantPath = false;
         bool ended = false;
-        string? sequence = null;
-        string? lastSegment = null;
+        bool canTrim = true;
+        long sequence = 0;
+        decimal? duration = null;
+        var segments = new List<HlsSegment>();
         while (lines.ReadLine()?.Trim() is { } line)
         {
             if (line == "#EXT-X-ENDLIST")
                 ended = true;
             else if (line.StartsWith("#EXT-X-MEDIA-SEQUENCE:", StringComparison.Ordinal))
-                sequence = line;
+                long.TryParse(line.AsSpan("#EXT-X-MEDIA-SEQUENCE:".Length), NumberStyles.None, CultureInfo.InvariantCulture, out sequence);
+            else if (line.StartsWith("#EXTINF:", StringComparison.Ordinal))
+            {
+                ReadOnlySpan<char> value = line.AsSpan("#EXTINF:".Length);
+                int comma = value.IndexOf(',');
+                duration = decimal.TryParse(comma < 0 ? value : value[..comma], NumberStyles.AllowDecimalPoint,
+                    CultureInfo.InvariantCulture, out decimal seconds) ? seconds : null;
+            }
             else if (line.StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal))
                 variantPath = true;
             else if (variantPath && line.Length != 0 && !line.StartsWith('#'))
@@ -103,11 +114,25 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
                 variantPath = false;
             }
             else if (line.Length != 0 && !line.StartsWith('#'))
-                lastSegment = line;
+            {
+                if (Uri.TryCreate(location, line, out Uri? segment))
+                    segments.Add(new(segment, duration));
+                duration = null;
+            }
+            else if (line.StartsWith("#EXT-X-", StringComparison.Ordinal) &&
+                !line.StartsWith("#EXT-X-TARGETDURATION:", StringComparison.Ordinal) &&
+                !line.StartsWith("#EXT-X-VERSION:", StringComparison.Ordinal) &&
+                !line.StartsWith("#EXT-X-PLAYLIST-TYPE:", StringComparison.Ordinal) &&
+                line != "#EXT-X-INDEPENDENT-SEGMENTS")
+                canTrim = false;
         }
         if (variant is not null)
-            return await ReadHttpMediaAsync(variant, depth + 1, token).ConfigureAwait(false);
-        return new(ended, lastSegment is null ? null : $"{sequence}\n{lastSegment}");
+        {
+            HttpMediaState? child = await ReadHttpMediaAsync(variant, depth + 1, token).ConfigureAwait(false);
+            return child is null ? null : child with { CanTrimHls = false };
+        }
+        return new(ended, sequence, segments, canTrim &&
+            segments.All(segment => segment.Uri.Scheme is "http" or "https" && segment.Duration is > 0 and <= int.MaxValue));
     }
 
     public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress, CancellationToken token)

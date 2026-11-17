@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace LiveRecorder.Core;
@@ -58,12 +60,16 @@ public sealed partial class MediaService
         bool http = source?.Scheme is "http" or "https";
         bool hls = http && IsPlaylistPath(source!.AbsolutePath);
         bool liveHls = false;
-        string? stalledPlaylist = null;
+        IReadOnlySet<Uri>? previousHlsRequests = null;
+        long? previousHlsSequence = null;
         long? outage = null;
         string? terminal = null;
 
         while (!token.IsCancellationRequested)
         {
+            int hlsStart = -1;
+            decimal? finalOffset = null;
+            HttpMediaState? finalPlaylist = null;
             if (outage is long since)
             {
                 TimeSpan remaining = reconnectLimit - Stopwatch.GetElapsedTime(since);
@@ -80,24 +86,45 @@ public sealed partial class MediaService
                     terminal = expired;
                     break;
                 }
-                if (stalledPlaylist is not null)
+                if (hls && previousHlsRequests is not null)
                 {
                     using var check = CancellationTokenSource.CreateLinkedTokenSource(token);
                     check.CancelAfter(remaining);
                     HttpMediaState? current = await InspectHttpMediaAsync(source!, check.Token).ConfigureAwait(false);
-                    if (current?.HasFixedDuration == true)
-                        break;
-                    if (current?.LastHlsSegment is not { } latest || latest == stalledPlaylist)
+                    if (current?.HlsSegments is not { Count: > 0 } segments)
                         continue;
+                    hlsStart = FindHlsResumeIndex(current, previousHlsRequests, previousHlsSequence);
+                    if (hlsStart == segments.Count)
+                    {
+                        if (current.HasFixedDuration)
+                            break;
+                        continue;
+                    }
+                    if (current.HasFixedDuration)
+                    {
+                        finalPlaylist = current;
+                        finalOffset = 0;
+                        for (int i = 0; i < hlsStart; i++)
+                            finalOffset += segments[i].Duration;
+                        if (finalOffset is null)
+                            finalOffset = 0; // Retain the tail even if the manifest cannot provide a seek offset.
+                    }
                 }
                 if (token.IsCancellationRequested)
                     break;
             }
 
-            // After reconnect, start close to the live edge instead of replaying the whole HLS window.
-            string[] attemptInput = outage.HasValue && hls
-                ? ["-live_start_index", "-1", .. (IsPlaylistPath(source!.AbsolutePath) ? [] : new[] { "-f", "hls" }), .. input]
-                : input;
+            // FFmpeg applies live_start_index only to live playlists. Final playlists use a time offset.
+            string[] attemptInput = input;
+            if (hls)
+                attemptInput = ["-f", "hls", "-http_multiple", "0", .. input];
+            if (outage.HasValue && hls)
+            {
+                string[] position = finalOffset is decimal offset
+                    ? ["-ss", offset.ToString(CultureInfo.InvariantCulture)]
+                    : ["-live_start_index", hlsStart.ToString(CultureInfo.InvariantCulture)];
+                attemptInput = [.. position, .. attemptInput];
+            }
             Action<DateTimeOffset, string>? onRestored = outage.HasValue
                 ? (at, folder) => events?.Report(new(at, true, $"已开始录制 {Path.GetFileName(folder)}。"))
                 : null;
@@ -108,16 +135,38 @@ public sealed partial class MediaService
                 terminal = expired;
                 break;
             }
-            RecordingAttempt attempt = await RecordSegmentAsync(executable, attemptInput, directory, partMegabytes, encoder,
-                progress, token, deinterlace, settings ?? DefaultTranscodeSettings, onRestored,
-                startupWait < stall ? startupWait : stall, stall).ConfigureAwait(false);
+            RecordingAttempt attempt;
+            string? tailPlaylist = null;
+            try
+            {
+                if (hlsStart > 0 && finalPlaylist is { CanTrimHls: true })
+                {
+                    tailPlaylist = Path.Combine(cacheDirectory, $"hls-tail-{Guid.NewGuid():N}.m3u8");
+                    await WriteHlsTailAsync(tailPlaylist, finalPlaylist, hlsStart, token).ConfigureAwait(false);
+                    attemptInput = ["-f", "hls", "-http_multiple", "0", "-protocol_whitelist", "file,http,https,httpproxy,tcp,tls",
+                        "-rw_timeout", DefaultTimeoutMicroseconds.ToString(CultureInfo.InvariantCulture), "-i", Path.GetFullPath(tailPlaylist)];
+                }
+                attempt = await RecordSegmentAsync(executable, attemptInput, directory, partMegabytes, encoder,
+                    progress, token, deinterlace, settings ?? DefaultTranscodeSettings, onRestored,
+                    startupWait < stall ? startupWait : stall, stall, http).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
+            finally
+            {
+                if (tailPlaylist is not null)
+                    File.Delete(tailPlaylist);
+            }
             hls |= attempt.Hls;
             liveHls |= attempt.Hls && attempt.DurationUnknown;
             if (attempt.Folder is { } recorded)
             {
                 folders.Add(recorded);
                 outage = null;
-                stalledPlaylist = null;
+                if (attempt.HlsRequests.Count > 0)
+                {
+                    previousHlsRequests = attempt.HlsRequests;
+                    previousHlsSequence = null;
+                }
             }
             if (token.IsCancellationRequested)
                 break;
@@ -132,18 +181,30 @@ public sealed partial class MediaService
             }
             if (!recoverable && !expectLive)
                 break;
+            if (finalOffset.HasValue && attempt.Folder is not null && !recoverable)
+                break;
 
             var (stoppedAt, stoppedTimestamp) = attempt.StallDetected ?? (DateTimeOffset.Now, Stopwatch.GetTimestamp());
             if (http && (hls || (attempt.Error is null && expectLive)))
             {
                 HttpMediaState? state = await InspectHttpMediaAsync(source!, token).ConfigureAwait(false);
-                if (state?.HasFixedDuration == true &&
-                    ((liveHls && state.LastHlsSegment is not null) || (attempt.Error is null && !attempt.Stalled)))
+                if (state?.HlsSegments is { Count: > 0 } segments)
+                {
+                    hls = true;
+                    liveHls |= !state.HasFixedDuration;
+                    if (attempt.Folder is not null && previousHlsRequests is not null)
+                    {
+                        int matched = FindHlsResumeIndex(state, previousHlsRequests, null);
+                        if (matched > 0)
+                            previousHlsSequence = state.HlsSequence + matched - 1;
+                        if (state.HasFixedDuration && matched == segments.Count)
+                            break;
+                    }
+                    else if (state.HasFixedDuration && !recoverable)
+                        break;
+                }
+                else if (state?.HasFixedDuration == true && !recoverable)
                     break;
-                hls |= state?.LastHlsSegment is not null;
-                liveHls |= state is { HasFixedDuration: false, LastHlsSegment: not null };
-                if (attempt.Folder is not null && state?.HasFixedDuration == false)
-                    stalledPlaylist = state.LastHlsSegment;
             }
             if (outage is null && !token.IsCancellationRequested)
             {
@@ -164,9 +225,34 @@ public sealed partial class MediaService
         return new RecordingResult(folders.AsReadOnly(), terminal);
     }
 
+    private static int FindHlsResumeIndex(HttpMediaState state, IReadOnlySet<Uri> previousRequests, long? previousSequence)
+    {
+        IReadOnlyList<HlsSegment> segments = state.HlsSegments!;
+        for (int i = segments.Count - 1; i >= 0; i--)
+        {
+            if (previousRequests.Contains(segments[i].Uri))
+                return i + 1;
+        }
+        return previousSequence is long sequence
+            ? (int)Math.Clamp(sequence - state.HlsSequence + 1, 0, segments.Count)
+            : 0;
+    }
+
+    private static Task WriteHlsTailAsync(string path, HttpMediaState state, int start, CancellationToken token)
+    {
+        HlsSegment[] tail = state.HlsSegments!.Skip(start).ToArray();
+        decimal target = Math.Ceiling(tail.Max(segment => segment.Duration!.Value));
+        var playlist = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:3\n");
+        playlist.Append(CultureInfo.InvariantCulture, $"#EXT-X-TARGETDURATION:{target}\n#EXT-X-MEDIA-SEQUENCE:{state.HlsSequence + start}\n");
+        foreach (HlsSegment segment in tail)
+            playlist.Append(CultureInfo.InvariantCulture, $"#EXTINF:{segment.Duration},\n{segment.Uri.AbsoluteUri}\n");
+        playlist.Append("#EXT-X-ENDLIST\n");
+        return File.WriteAllTextAsync(path, playlist.ToString(), token);
+    }
+
     private async Task<RecordingAttempt> RecordSegmentAsync(string executable, string[] input, string directory, int partMegabytes,
         VideoEncoder encoder, IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace,
-        EncodingSettings settings, Action<DateTimeOffset, string>? onRestored, TimeSpan startupWait, TimeSpan stall)
+        EncodingSettings settings, Action<DateTimeOffset, string>? onRestored, TimeSpan startupWait, TimeSpan stall, bool trackHls)
     {
         string? recordingDirectory = null;
         string[] codecs = ["-c", "copy"];
@@ -180,6 +266,7 @@ public sealed partial class MediaService
         (DateTimeOffset At, long Timestamp)? stallDetected = null;
         DateTimeOffset? lastMediaAt = null;
         Exception? error = null;
+        var requestedSegments = new LinkedList<Uri>();
         try
         {
             while (!token.IsCancellationRequested)
@@ -194,7 +281,7 @@ public sealed partial class MediaService
                 try
                 {
                     await FfmpegProcess.RunAsync(executable, cacheDirectory,
-                        ["-loglevel", "info", .. input, .. MapStreams(), .. codecs, "-f", "mpegts", "pipe:1"],
+                        ["-loglevel", trackHls ? "verbose" : "info", .. input, .. MapStreams(), .. codecs, "-f", "mpegts", "pipe:1"],
                         progress, watch.Token,
                         readOutput: stream => RecordingParts.SplitAsync(stream, BeginFolder, cacheDirectory,
                             partMegabytes * 1_000_000L, progress, () =>
@@ -229,6 +316,7 @@ public sealed partial class MediaService
                     };
                     codecs = EncodingArguments.Create(encoder, deinterlace, fallback, streams, forceVideo: convertVideo);
                     streams = new SourceEncodingInfo();
+                    requestedSegments.Clear();
                 }
                 catch (OperationCanceledException) when (watch.IsCancellationRequested)
                 {
@@ -248,7 +336,8 @@ public sealed partial class MediaService
             else if (!Directory.EnumerateFileSystemEntries(path).Any())
                 Directory.Delete(path);
         }
-        return new RecordingAttempt(folder, error, stalled, hls, durationUnknown, lastMediaAt, stalled ? stallDetected : null);
+        return new RecordingAttempt(folder, error, stalled, hls, durationUnknown, lastMediaAt, stalled ? stallDetected : null,
+            requestedSegments.ToHashSet());
 
         string BeginFolder()
         {
@@ -261,6 +350,23 @@ public sealed partial class MediaService
 
         void ReadRecordingDiagnostic(string line)
         {
+            const string segmentMarker = "HLS request for url '";
+            int marker = line.IndexOf(segmentMarker, StringComparison.Ordinal);
+            if (marker >= 0)
+            {
+                int start = marker + segmentMarker.Length;
+                int end = line.LastIndexOf("', offset ", StringComparison.Ordinal);
+                if (end > start && Uri.TryCreate(line[start..end], UriKind.Absolute, out Uri? segment))
+                {
+                    if (requestedSegments.Count == 128)
+                        requestedSegments.RemoveFirst();
+                    requestedSegments.AddLast(segment);
+                }
+            }
+            else if (line.Contains("Failed to open segment", StringComparison.Ordinal) && requestedSegments.Count > 0)
+            {
+                requestedSegments.RemoveLast();
+            }
             streams.Read(line);
             if (line.StartsWith("Input #0,", StringComparison.Ordinal))
             {
@@ -298,7 +404,8 @@ public sealed partial class MediaService
                 line.Contains("Input/output error", StringComparison.OrdinalIgnoreCase))));
 
     private sealed record RecordingAttempt(RecordingFolder? Folder, Exception? Error, bool Stalled, bool Hls,
-        bool DurationUnknown, DateTimeOffset? LastMediaAt, (DateTimeOffset At, long Timestamp)? StallDetected);
+        bool DurationUnknown, DateTimeOffset? LastMediaAt, (DateTimeOffset At, long Timestamp)? StallDetected,
+        IReadOnlySet<Uri> HlsRequests);
 
     private sealed class RecordingMuxException(bool video, string message) : InvalidOperationException(message)
     {
