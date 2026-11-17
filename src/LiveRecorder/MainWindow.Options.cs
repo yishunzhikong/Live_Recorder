@@ -270,6 +270,8 @@ public sealed partial class MainWindow
                 error.Message = ex.Message;
                 error.IsOpen = true;
                 body.ChangeView(null, 0, null);
+                if (ex is IOException or UnauthorizedAccessException or JsonException)
+                    PortableStorage.Log.Write(LogLevel.Error, "Configuration", $"无法保存「{title}」设置。", ex);
             }
         };
         try { return await dialog.ShowAsync() == ContentDialogResult.Primary; }
@@ -318,61 +320,22 @@ public sealed partial class MainWindow
     {
         LoggingSettings settings = PortableStorage.Configuration.Current.Logging;
         LogLevel[] choices = Enum.GetValues<LogLevel>();
-        var levels = new ComboBox
-        {
-            Header = "日志级别", HorizontalAlignment = HorizontalAlignment.Stretch,
-            ItemsSource = new[] { "Debug", "Info", "Warning", "Error", "关闭日志" },
-            SelectedIndex = Array.IndexOf(choices, settings.Level)
-        };
-        var size = CreateLogNumberBox("单个日志文件大小（MB）", settings.FileSizeMb);
-        var count = CreateLogNumberBox("最多保留文件数", settings.FileCount);
-        var error = new InfoBar { Severity = InfoBarSeverity.Error, IsClosable = false };
-        var options = new StackPanel { Spacing = 12 };
-        options.Children.Add(levels);
-        options.Children.Add(size);
-        options.Children.Add(count);
-        options.Children.Add(error);
-        var dialog = new ContentDialog
-        {
-            XamlRoot = ((FrameworkElement)Content).XamlRoot,
-            Title = "日志设置",
-            Content = options,
-            PrimaryButtonText = "保存",
-            CloseButtonText = "取消",
-            DefaultButton = ContentDialogButton.Primary
-        };
-        dialog.PrimaryButtonClick += (_, args) =>
+        var levels = SettingChoice("日志级别", Array.IndexOf(choices, settings.Level),
+            "Debug", "Info", "Warning", "Error", "关闭日志");
+        var size = SettingNumber("单个日志文件大小（MB）", settings.FileSizeMb, 1, 100);
+        var count = SettingNumber("最多保留文件数", settings.FileCount, 1, 100);
+        if (await ShowOptionsAsync("日志设置", FormPanel(levels, size, count), Save))
+            SetStatus("日志设置已保存", $"{levels.SelectedItem} · {size.Value:0} MB · 保留 {count.Value:0} 个文件");
+
+        void Save()
         {
             if (levels.SelectedIndex < 0 || !IsIntegerInRange(size.Value, 1, 100) || !IsIntegerInRange(count.Value, 1, 100))
-            {
-                args.Cancel = true;
-                error.Message = "请选定日志级别，大小和保留数量应为 1 到 100 的整数。";
-                error.IsOpen = true;
-                return;
-            }
+                throw new ArgumentException("请选定日志级别，大小和保留数量应为 1 到 100 的整数。");
             var next = new LoggingSettings(choices[levels.SelectedIndex], (int)size.Value, (int)count.Value);
-            try
-            {
-                PortableStorage.Configuration.Update(current => current with { Logging = next });
-                PortableStorage.Log.Configure(next);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-            {
-                args.Cancel = true;
-                error.Message = $"无法保存日志设置。{ex.Message}";
-                error.IsOpen = true;
-                PortableStorage.Log.Write(LogLevel.Error, "Configuration", "无法保存日志设置。", ex);
-            }
-        };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-            SetStatus("日志设置已保存", $"{levels.SelectedItem} · {size.Value:0} MB · 保留 {count.Value:0} 个文件");
+            PortableStorage.Configuration.Update(current => current with { Logging = next });
+            PortableStorage.Log.Configure(next);
+        }
     });
-
-    private static NumberBox CreateLogNumberBox(string label, int value) => new()
-    {
-        Header = label, Minimum = 1, Maximum = 100, Value = value,
-        SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact
-    };
 
     private static bool IsIntegerInRange(double value, int minimum, int maximum) =>
         double.IsInteger(value) && value >= minimum && value <= maximum;
