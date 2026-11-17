@@ -35,10 +35,27 @@ Live Recorder 是使用 C#、WinUI 3 和 Windows App SDK 构建的 Windows 视�
 
 ## 从源码构建
 
+日常开发在 `dev` 分支进行，正式版本从 `main` 发布。
+
 安装 .NET 10 SDK 后，在仓库根目录运行以下命令。[下载 .NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
 
 ```powershell
 dotnet build src/LiveRecorder/LiveRecorder.csproj -c Release
+```
+
+## 发布新版
+
+每次发布应用新版前，运行以下脚本同步 FFmpeg Windows Essentials 构建和 yt-dlp 的最新稳定版。将 `build/BundledTools.props` 中更新的版本和 SHA-256 随应用版本一并提交。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\build\Update-BundledTools.ps1
+```
+
+`dotnet publish -c Release` 会再次核对上游版本。发现有新版本时，先更新依赖再发布。常规 `dotnet build` 使用已固定的版本。遇到 GitHub API 匿名限流时，可在当前终端设置 `GH_TOKEN` 后重试。
+
+下方以 v1.0.1 为例。打包新版时，将目录名和 ZIP 文件名中的版本号改为本次版本。
+
+```powershell
 dotnet publish src/LiveRecorder/LiveRecorder.csproj -c Release -o artifacts/LiveRecorder-v1.0.1-win-x64
 Copy-Item -LiteralPath README.md -Destination artifacts/LiveRecorder-v1.0.1-win-x64/
 tar.exe -a -cf artifacts/LiveRecorder-v1.0.1-win-x64.zip --exclude='*.pdb' -C artifacts LiveRecorder-v1.0.1-win-x64
@@ -46,6 +63,6 @@ tar.exe -a -cf artifacts/LiveRecorder-v1.0.1-win-x64.zip --exclude='*.pdb' -C ar
 
 首次构建时会自动下载并校验固定版本的 FFmpeg、yt-dlp 和 Deno。发布目录包含这些依赖以及 .NET 和 Windows App SDK 运行时。目标机器还需 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。
 
-随包分发的 FFmpeg 是 [Gyan FFmpeg 9.0.2 Essentials](https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2) 的 Windows x64 构建，按 GPL v3 授权。发布包的 `ffmpeg` 子目录附带许可证和原始构建说明。对应源码见 [FFmpeg 9.0.2 源码版本](https://github.com/FFmpeg/FFmpeg/tree/946fcce07b)，协议细节见 [FFmpeg 协议文档](https://ffmpeg.org/ffmpeg-protocols.html)。
+随包分发的 FFmpeg 是 Gyan FFmpeg Essentials 的 Windows x64 构建，按 GPL v3 授权。发布包的 `ffmpeg` 子目录附带许可证和原始构建说明。具体版本见 `build/BundledTools.props`，对应源码由上游发行页注明。[FFmpeg Windows 构建发行页](https://github.com/GyanD/codexffmpeg/releases) · [FFmpeg 协议文档](https://ffmpeg.org/ffmpeg-protocols.html)
 
-网页分析使用 [yt-dlp 2026.10.26](https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.26) 的官方 Windows 可执行文件，以及供其运行网页解析脚本的 [Deno 2.9.8](https://github.com/denoland/deno/releases/tag/v2.9.8)。发布包的 `yt-dlp` 子目录附带源码项目的许可证。yt-dlp 官方打包的可执行文件按 GPL v3 或更高版本授权，GPL v3 全文见 `ffmpeg/LICENSE`。
+网页分析使用 yt-dlp 的官方 Windows 可执行文件和 Deno 2.9.8。yt-dlp 的具体版本见 `build/BundledTools.props`。发布包的 `yt-dlp` 子目录附带源码项目的许可证。yt-dlp 官方打包的可执行文件按 GPL v3 或更高版本授权，GPL v3 全文见 `ffmpeg/LICENSE`。[yt-dlp 发行页](https://github.com/yt-dlp/yt-dlp/releases) · [Deno 2.9.8 发行页](https://github.com/denoland/deno/releases/tag/v2.9.8)

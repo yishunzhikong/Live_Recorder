@@ -4,9 +4,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ytDlpVersion = '2026.10.26'
+$tools = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'BundledTools.props') -Raw)).Project.PropertyGroup
+$ytDlpVersion = $tools.YtDlpVersion
 $denoVersion = 'v2.9.8'
-$ytDlpRelease = "https://github.com/yt-dlp/yt-dlp/releases/download/$ytDlpVersion"
+$ytDlpRelease = "https://github.com/$($tools.YtDlpRepository)/releases/download/$ytDlpVersion"
 $denoRelease = "https://github.com/denoland/deno/releases/download/$denoVersion"
 
 function Download($Url, $Target, $Checksum) {
@@ -23,9 +24,9 @@ $staging = Join-Path $Destination ([guid]::NewGuid().ToString('N'))
 $denoArchive = Join-Path $staging 'deno.zip'
 $files = @('yt-dlp.exe', 'deno.exe', 'LICENSE-yt-dlp.txt', 'LICENSE-deno.txt')
 try {
-    Download "$ytDlpRelease/yt-dlp.exe" (Join-Path $staging 'yt-dlp.exe') 'f5389d3698ecde4ef06f4e6b1ce0294fe9ac1396228c8990b8d3416d6d177a7d'
+    Download "$ytDlpRelease/yt-dlp.exe" (Join-Path $staging 'yt-dlp.exe') $tools.YtDlpSha256
     Download "$denoRelease/deno-x86_64-pc-windows-msvc.zip" $denoArchive 'cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf'
-    Download "https://raw.githubusercontent.com/yt-dlp/yt-dlp/$ytDlpVersion/LICENSE" (Join-Path $staging 'LICENSE-yt-dlp.txt')
+    Download "https://raw.githubusercontent.com/$($tools.YtDlpRepository)/$ytDlpVersion/LICENSE" (Join-Path $staging 'LICENSE-yt-dlp.txt')
     Download "https://raw.githubusercontent.com/denoland/deno/$denoVersion/LICENSE.md" (Join-Path $staging 'LICENSE-deno.txt')
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $zip = [IO.Compression.ZipFile]::OpenRead($denoArchive)

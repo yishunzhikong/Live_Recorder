@@ -4,9 +4,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$archiveName = 'ffmpeg-9.0.2-essentials_build'
-$url = "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/$archiveName.zip"
-$checksum = '60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba'
+$tools = ([xml](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'BundledTools.props') -Raw)).Project.PropertyGroup
+$version = $tools.FfmpegVersion
+$archiveName = "ffmpeg-$version-essentials_build"
+$url = "https://github.com/$($tools.FfmpegRepository)/releases/download/$version/$archiveName.zip"
+$checksum = $tools.FfmpegSha256
 $files = @{
     'bin/ffmpeg.exe' = 'ffmpeg.exe'
     'LICENSE' = 'LICENSE'
@@ -20,7 +22,7 @@ try {
     $archive = Join-Path $staging "$archiveName.zip"
     & curl.exe --fail --location --silent --show-error --retry 2 --output $archive $url
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not download FFmpeg 9.0.2 (curl exit code $LASTEXITCODE)."
+        throw "Could not download FFmpeg $version (curl exit code $LASTEXITCODE)."
     }
     if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $checksum) {
         throw 'FFmpeg archive failed SHA-256 verification.'

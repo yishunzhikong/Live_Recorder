@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../../build/BundledTools.props" />
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <Version>1.0.1</Version>
@@ -18,8 +19,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>../../icon/icon.ico</ApplicationIcon>
-    <BundledFFmpegDirectory>$(MSBuildProjectDirectory)/../../.tools/ffmpeg-9.0.2</BundledFFmpegDirectory>
-    <BundledYtDlpDirectory>$(MSBuildProjectDirectory)/../../.tools/yt-dlp-2026.10.26</BundledYtDlpDirectory>
+    <BundledFFmpegDirectory>$(MSBuildProjectDirectory)/../../.tools/ffmpeg-$(FfmpegVersion)</BundledFFmpegDirectory>
+    <BundledYtDlpDirectory>$(MSBuildProjectDirectory)/../../.tools/yt-dlp-$(YtDlpVersion)</BundledYtDlpDirectory>
   </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
@@ -31,6 +32,9 @@
     <None Include="$(BundledYtDlpDirectory)/yt-dlp.exe;$(BundledYtDlpDirectory)/deno.exe;$(BundledYtDlpDirectory)/LICENSE-yt-dlp.txt;$(BundledYtDlpDirectory)/LICENSE-deno.txt"
           Link="yt-dlp/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <Target Name="CheckBundledToolsBeforePublish" BeforeTargets="PrepareForPublish" Condition="'$(Configuration)' == 'Release'">
+    <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)/../../build/Update-BundledTools.ps1&quot; -Check" />
+  </Target>
   <Target Name="PrepareBundledFFmpeg" BeforeTargets="PrepareForBuild"
           Condition="'$(DesignTimeBuild)' != 'true' and (!Exists('$(BundledFFmpegDirectory)/ffmpeg.exe') or !Exists('$(BundledFFmpegDirectory)/LICENSE') or !Exists('$(BundledFFmpegDirectory)/README.txt'))">
     <Exec Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)/../../build/Get-FFmpeg.ps1&quot; -Destination &quot;$(BundledFFmpegDirectory)&quot;" />
