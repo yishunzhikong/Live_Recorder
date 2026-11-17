@@ -77,23 +77,37 @@ public sealed partial class MainWindow
             return;
         }
 
+        WebVideoLink? format = SelectedWebFormat;
+        MediaRequestHeaders? headers = format?.Headers;
         await OpenPreviewAsync($"网络预览 · {source.Scheme.ToUpperInvariant()}", source, (vlc, session) =>
         {
-            // The Windows LibVLC package has no RTMP access plugin.
-            if (source.Scheme is "rtmp" or "rtmps" or "rtmpt" or "rtmpts" or "rtsps")
-                return session.FromStream(vlc, _media.OpenNetworkPreview(source, session.Cancellation.Token), ":demux=ts");
+            // VLC's HTTP input supports User-Agent and Referer but cannot set Origin.
+            if (headers?.Origin is not null || source.Scheme is "rtmp" or "rtmps" or "rtmpt" or "rtmpts" or "rtsps")
+                return session.FromStream(vlc, _media.OpenNetworkPreview(source, session.Cancellation.Token, headers), ":demux=ts");
             // VLC treats the address after @ as the local RTP/UDP receive address.
             string location = (source.Scheme is "rtp" or "udp") && source.UserInfo.Length == 0
                 ? $"{source.Scheme}://@{source.Authority}" : source.AbsoluteUri;
-            return new Media(vlc, location, FromType.FromLocation);
-        }, SelectedWebFormat);
+            return CreateNetworkMedia(vlc, location, headers);
+        }, format);
     }
 
     private Task PreviewWebAudioAsync(WebVideoLink audio)
     {
         var source = new Uri(audio.Url);
-        return OpenPreviewAsync(audio.Label, source, (vlc, _) => new Media(vlc, source), audio,
+        if (audio.Headers?.Origin is not null)
+            return PlayAudioStreamAsync(audio);
+        return OpenPreviewAsync(audio.Label, source, (vlc, _) => CreateNetworkMedia(vlc, source.AbsoluteUri, audio.Headers), audio,
             () => PlayAudioStreamAsync(audio));
+    }
+
+    private static Media CreateNetworkMedia(LibVLC vlc, string location, MediaRequestHeaders? headers)
+    {
+        var media = new Media(vlc, location, FromType.FromLocation);
+        if (headers?.UserAgent is { } userAgent)
+            media.AddOption(":http-user-agent=" + userAgent);
+        if (headers?.Referer is { } referer)
+            media.AddOption(":http-referrer=" + referer);
+        return media;
     }
 
     private Task PlayAudioStreamAsync(WebVideoLink audio) => OpenPreviewAsync(audio.Label, null, (vlc, session) =>
@@ -175,7 +189,7 @@ public sealed partial class MainWindow
 
     private async Task CheckPreviewDurationAsync(PreviewSession session, Uri source, CancellationToken token)
     {
-        if (await MediaService.HasFixedPreviewDurationAsync(source, token) && _preview == session)
+        if (await MediaService.HasFixedPreviewDurationAsync(source, token, session.WebFormat?.Headers) && _preview == session)
             session.HasFixedDuration = true;
     }
 

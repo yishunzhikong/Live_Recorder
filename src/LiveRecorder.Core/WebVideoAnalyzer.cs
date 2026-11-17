@@ -5,7 +5,10 @@ using System.Text.Json;
 
 namespace LiveRecorder.Core;
 
-public sealed record WebVideoLink(string Label, string Url, bool AudioOnly, string PageUrl, string? FormatId, bool IsLive);
+public sealed record WebVideoLink(string Label, string Url, bool AudioOnly, string PageUrl, string? FormatId, bool IsLive)
+{
+    public MediaRequestHeaders? Headers { get; init; }
+}
 public sealed record WebVideoAnalysis(string Title, IReadOnlyList<WebVideoLink> Links);
 
 public sealed class WebVideoAnalyzer(string? executable, string deno, string cacheDirectory)
@@ -196,9 +199,15 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
                 ? $"{height.GetRawText()}p" : StringProperty(format, "format_note");
             string? formatId = StringProperty(format, "format_id");
             string label = string.Join(" · ", new[] { role, resolution, extension?.ToUpperInvariant(), formatId }.OfType<string>());
-            candidates.Add((new WebVideoLink(label, url, video == "none", pageUrl, formatId, isLive), order));
+            candidates.Add((new WebVideoLink(label, url, video == "none", pageUrl, formatId, isLive)
+            {
+                Headers = MediaRequestHeaders.FromExtractor(ReadHeaders(format), ReadHeaders(media))
+            }, order));
         }
     }
+
+    private static JsonElement ReadHeaders(JsonElement item) =>
+        item.TryGetProperty("http_headers", out JsonElement headers) ? headers : default;
 
     private static string? StringProperty(JsonElement item, string name) =>
         item.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;

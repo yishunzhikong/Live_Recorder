@@ -31,29 +31,29 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         return uri;
     }
 
-    public static async Task<bool> HasFixedPreviewDurationAsync(Uri source, CancellationToken token) =>
-        (await InspectHttpMediaAsync(source, token).ConfigureAwait(false))?.HasFixedDuration == true;
+    public static async Task<bool> HasFixedPreviewDurationAsync(Uri source, CancellationToken token, MediaRequestHeaders? headers = null) =>
+        (await InspectHttpMediaAsync(source, token, headers).ConfigureAwait(false))?.HasFixedDuration == true;
 
     private sealed record HlsSegment(Uri Uri, decimal? Duration);
     private sealed record HttpMediaState(bool HasFixedDuration, long HlsSequence = 0, IReadOnlyList<HlsSegment>? HlsSegments = null,
         bool CanTrimHls = false);
 
-    private static async Task<HttpMediaState?> InspectHttpMediaAsync(Uri source, CancellationToken token)
+    private static async Task<HttpMediaState?> InspectHttpMediaAsync(Uri source, CancellationToken token, MediaRequestHeaders? headers)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(5));
-        try { return await ReadHttpMediaAsync(source, 0, timeout.Token).ConfigureAwait(false); }
+        try { return await ReadHttpMediaAsync(source, 0, timeout.Token, headers).ConfigureAwait(false); }
         catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException or XmlException)
         {
             return null;
         }
     }
 
-    private static async Task<HttpMediaState?> ReadHttpMediaAsync(Uri source, int depth, CancellationToken token)
+    private static async Task<HttpMediaState?> ReadHttpMediaAsync(Uri source, int depth, CancellationToken token, MediaRequestHeaders? headers)
     {
         if (depth > 3 || source.Scheme is not ("http" or "https"))
             return null;
-        using var response = await Http.GetAsync(source, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+        using var response = await GetHttpMediaAsync(source, token, headers).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
             return null;
         Uri location = response.RequestMessage?.RequestUri ?? source;
@@ -128,26 +128,34 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         }
         if (variant is not null)
         {
-            HttpMediaState? child = await ReadHttpMediaAsync(variant, depth + 1, token).ConfigureAwait(false);
+            HttpMediaState? child = await ReadHttpMediaAsync(variant, depth + 1, token, headers).ConfigureAwait(false);
             return child is null ? null : child with { CanTrimHls = false };
         }
         return new(ended, sequence, segments, canTrim &&
             segments.All(segment => segment.Uri.Scheme is "http" or "https" && segment.Duration is > 0 and <= int.MaxValue));
     }
 
-    public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress, CancellationToken token)
+    private static async Task<HttpResponseMessage> GetHttpMediaAsync(Uri source, CancellationToken token, MediaRequestHeaders? headers)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, source);
+        headers?.Apply(request);
+        return await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+    }
+
+    public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress, CancellationToken token,
+        MediaRequestHeaders? headers = null)
     {
         bool httpSource = source.Scheme is "http" or "https";
         if (httpSource && !IsPlaylistPath(source.AbsolutePath))
         {
-            string? directFile = await TryDownloadHttpAsync(source, directory, progress, token).ConfigureAwait(false);
+            string? directFile = await TryDownloadHttpAsync(source, directory, progress, token, headers).ConfigureAwait(false);
             if (directFile is not null)
                 return directFile;
         }
 
         DateTime started = DateTime.Now;
         string output = Path.Combine(Path.GetFullPath(directory), TimestampedName("video", started) + ".mkv");
-        return await WriteMediaAsync(output, NetworkInput(source, hls: httpSource), ["-c", "copy"], "matroska", progress, token,
+        return await WriteMediaAsync(output, NetworkInput(source, hls: httpSource, headers: headers), ["-c", "copy"], "matroska", progress, token,
             audioName: TimestampedName("audio", started)).ConfigureAwait(false);
     }
 
@@ -155,10 +163,10 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         MoveToAvailableName(stagedFile, Directory.CreateDirectory(directory).FullName, FormattableString.Invariant($"audio_{completedAt:yyyyMMdd_HHmmss}"),
             ".m4a");
 
-    public PreviewStream OpenNetworkPreview(Uri source, CancellationToken token)
+    public PreviewStream OpenNetworkPreview(Uri source, CancellationToken token, MediaRequestHeaders? headers = null)
     {
         var start = ToolProcess.CreateStartInfo(ToolProcess.RequireExecutable(ffmpeg, "FFmpeg"), cacheDirectory);
-        string[] arguments = ["-hide_banner", "-loglevel", "warning", "-nostdin", .. NetworkInput(source),
+        string[] arguments = ["-hide_banner", "-loglevel", "warning", "-nostdin", .. NetworkInput(source, headers: headers),
             .. MapStreams(), "-c", "copy", "-f", "mpegts", "pipe:1"];
         foreach (string argument in arguments)
             start.ArgumentList.Add(argument);
@@ -289,11 +297,11 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     }
 
     private async Task<string?> TryDownloadHttpAsync(Uri source, string directory,
-        IProgress<MediaProgress>? progress, CancellationToken token)
+        IProgress<MediaProgress>? progress, CancellationToken token, MediaRequestHeaders? headers)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
-        using var response = await Http.GetAsync(source, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        using var response = await GetHttpMediaAsync(source, timeout.Token, headers).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         string mime = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant() ?? "";
         Uri finalUri = response.RequestMessage?.RequestUri ?? source;
@@ -362,16 +370,17 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         finally { File.Delete(partial); }
     }
 
-    private static string[] NetworkInput(Uri source, bool hls = false)
+    private static string[] NetworkInput(Uri source, bool hls = false, MediaRequestHeaders? headers = null)
     {
         if (source.Scheme is "rtsp" or "rtsps")
             return ["-protocol_whitelist", NetworkProtocols, "-rtsp_flags", "prefer_tcp",
                 "-timeout", $"{DefaultTimeoutMicroseconds}", "-i", source.AbsoluteUri];
 
-        string[] format = (source.Scheme is "http" or "https") && (hls || IsPlaylistPath(source.AbsolutePath))
-            ? ["-f", "hls"] : [];
+        bool http = source.Scheme is "http" or "https";
+        string[] format = http && (hls || IsPlaylistPath(source.AbsolutePath)) ? ["-f", "hls"] : [];
+        string[] request = http ? headers?.FfmpegArguments() ?? [] : [];
         string[] timeout = source.Scheme == "rtp" ? [] : ["-rw_timeout", $"{DefaultTimeoutMicroseconds}"];
-        return ["-protocol_whitelist", NetworkProtocols, .. timeout, .. format, "-i", source.AbsoluteUri];
+        return ["-protocol_whitelist", NetworkProtocols, .. timeout, .. format, .. request, "-i", source.AbsoluteUri];
     }
 
     private static bool IsPlaylistPath(string path) => Path.GetExtension(path).ToLowerInvariant() is ".m3u8" or ".m3u";

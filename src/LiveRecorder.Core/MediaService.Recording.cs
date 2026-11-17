@@ -27,9 +27,9 @@ public sealed partial class MediaService
     public Task<RecordingResult> RecordAsync(Uri source, string directory, int partMegabytes, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
         EncodingSettings? settings = null, bool? live = null, IProgress<RecordingEvent>? events = null,
-        RecordingReconnectSettings? reconnect = null) =>
-        RecordSessionAsync(NetworkInput(source), source, live, directory, partMegabytes, encoder, progress, token,
-            deinterlace, settings, events, reconnect);
+        RecordingReconnectSettings? reconnect = null, MediaRequestHeaders? headers = null) =>
+        RecordSessionAsync(NetworkInput(source, headers: headers), source, live, directory, partMegabytes, encoder, progress, token,
+            deinterlace, settings, events, reconnect, headers);
 
     public Task<RecordingResult> RecordSdpAsync(string path, string directory, int partMegabytes, VideoEncoder encoder,
         IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
@@ -38,13 +38,13 @@ public sealed partial class MediaService
         if (!Path.GetExtension(path).Equals(".sdp", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
             throw new ArgumentException("请选择有效的本地 SDP 文件。");
         return RecordSessionAsync(["-protocol_whitelist", "file,udp,rtp", "-f", "sdp", "-i", Path.GetFullPath(path)],
-            null, true, directory, partMegabytes, encoder, progress, token, deinterlace, settings, events, reconnect);
+            null, true, directory, partMegabytes, encoder, progress, token, deinterlace, settings, events, reconnect, null);
     }
 
     private async Task<RecordingResult> RecordSessionAsync(string[] input, Uri? source, bool? live, string directory,
         int partMegabytes, VideoEncoder encoder, IProgress<MediaProgress>? progress, CancellationToken token,
         DeinterlaceMode deinterlace, EncodingSettings? settings, IProgress<RecordingEvent>? events,
-        RecordingReconnectSettings? reconnect)
+        RecordingReconnectSettings? reconnect, MediaRequestHeaders? headers)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(partMegabytes, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(partMegabytes, 1024);
@@ -90,7 +90,7 @@ public sealed partial class MediaService
                 {
                     using var check = CancellationTokenSource.CreateLinkedTokenSource(token);
                     check.CancelAfter(remaining);
-                    HttpMediaState? current = await InspectHttpMediaAsync(source!, check.Token).ConfigureAwait(false);
+                    HttpMediaState? current = await InspectHttpMediaAsync(source!, check.Token, headers).ConfigureAwait(false);
                     if (current?.HlsSegments is not { Count: > 0 } segments)
                         continue;
                     hlsStart = FindHlsResumeIndex(current, previousHlsRequests, previousHlsSequence);
@@ -139,7 +139,7 @@ public sealed partial class MediaService
             string? tailPlaylist = null;
             try
             {
-                if (hlsStart > 0 && finalPlaylist is { CanTrimHls: true })
+                if (hlsStart > 0 && finalPlaylist is { CanTrimHls: true } && headers is null)
                 {
                     tailPlaylist = Path.Combine(cacheDirectory, $"hls-tail-{Guid.NewGuid():N}.m3u8");
                     await WriteHlsTailAsync(tailPlaylist, finalPlaylist, hlsStart, token).ConfigureAwait(false);
@@ -187,7 +187,7 @@ public sealed partial class MediaService
             var (stoppedAt, stoppedTimestamp) = attempt.StallDetected ?? (DateTimeOffset.Now, Stopwatch.GetTimestamp());
             if (http && (hls || (attempt.Error is null && expectLive)))
             {
-                HttpMediaState? state = await InspectHttpMediaAsync(source!, token).ConfigureAwait(false);
+                HttpMediaState? state = await InspectHttpMediaAsync(source!, token, headers).ConfigureAwait(false);
                 if (state?.HlsSegments is { Count: > 0 } segments)
                 {
                     hls = true;

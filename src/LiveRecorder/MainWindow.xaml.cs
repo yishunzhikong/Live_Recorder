@@ -53,7 +53,7 @@ public sealed partial class MainWindow : Window
         }
 
         Uri source = SelectedMediaSource();
-        string output = await _media.DownloadAsync(source, OutputDirectory(), CreateProgress(), token);
+        string output = await _media.DownloadAsync(source, OutputDirectory(), CreateProgress(), token, SelectedWebFormat?.Headers);
         ShowOutput("下载完成", output);
     });
 
@@ -64,9 +64,10 @@ public sealed partial class MainWindow : Window
         MediaSettings settings = PortableStorage.Configuration.Current.Media;
         if (source.Scheme is "rtp" or "udp")
             await ReleaseDatagramPreviewAsync(source);
+        WebVideoLink? format = SelectedWebFormat;
         RecordingResult recording = await _media.RecordAsync(source, directory, settings.PartSizeMb, settings.Encoder,
-            CreateProgress(), token, settings.Deinterlace, settings.Encoding, SelectedWebFormat?.IsLive, RecordingEvents(token),
-            _mode == AppMode.Live ? settings.Reconnect : null);
+            CreateProgress(), token, settings.Deinterlace, settings.Encoding, format?.IsLive, RecordingEvents(token),
+            _mode == AppMode.Live ? settings.Reconnect : null, format?.Headers);
         await FinishRecordingAsync(recording, directory, settings);
     });
 
