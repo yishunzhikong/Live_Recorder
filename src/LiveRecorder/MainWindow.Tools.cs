@@ -5,7 +5,8 @@ namespace LiveRecorder;
 
 public sealed partial class MainWindow
 {
-    private readonly ToolUpdater _toolUpdater = new(PortableStorage.ToolsDirectory, PortableStorage.CacheDirectory);
+    private readonly ToolUpdater _toolUpdater = new(PortableStorage.ToolsDirectory, PortableStorage.CacheDirectory,
+        configuration: PortableStorage.Configuration);
     private string? _ffmpegPath;
     private ToolVersionsDialog? _toolVersionsDialog;
 
@@ -50,7 +51,7 @@ public sealed partial class MainWindow
             result = await _toolUpdater.UpdateAsync(tool, CreateProgress(), token, () => DispatcherQueue.TryEnqueue(() =>
             {
                 if (!finished && !token.IsCancellationRequested)
-                    SetStatus($"正在检查 {name}", "GitHub API 查询失败（HTTP 403），正在使用官方发布页查询。");
+                    SetStatus($"正在检查 {name}", "GitHub API 查询失败（HTTP 403），正在使用官方发布页查询。", LogLevel.Warning);
             }));
         }
         finally

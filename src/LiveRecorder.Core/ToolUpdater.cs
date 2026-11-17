@@ -27,6 +27,7 @@ public sealed class ToolUpdater
     private readonly string _directory;
     private readonly string _cacheDirectory;
     private readonly HttpClient _http;
+    private readonly PortableConfiguration _configuration;
 
     private sealed record Tool(string Name, string Repository)
     {
@@ -35,11 +36,14 @@ public sealed class ToolUpdater
     private sealed record InstalledTool(string Tag, Version Version, string Path);
     private sealed record ReleaseAsset(string Tag, Version Version, string Name, Uri Address, string Sha256, long? Size);
 
-    public ToolUpdater(string directory, string cacheDirectory, HttpClient? http = null)
+    public ToolUpdater(string directory, string cacheDirectory, HttpClient? http = null, PortableConfiguration? configuration = null)
     {
         _directory = directory;
         _cacheDirectory = cacheDirectory;
         _http = http ?? Network;
+        _configuration = configuration ?? new PortableConfiguration(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(directory))!, "config"));
+        if (configuration is null)
+            _configuration.Load(directory);
     }
 
     public string? GetExecutable(MediaTool tool) => FindActive(Definition(tool))?.Path;
@@ -59,15 +63,8 @@ public sealed class ToolUpdater
         Tool tool = Definition(kind);
         InstalledTool installed = FindVersion(tool, tag);
         await VerifyVersionAsync(kind, installed.Path, installed.Version, token).ConfigureAwait(false);
-        string staging = CreateStagingDirectory();
-        try
-        {
-            string preference = Path.Combine(staging, "selected-version.txt");
-            await File.WriteAllTextAsync(preference, installed.Tag, token).ConfigureAwait(false);
-            token.ThrowIfCancellationRequested();
-            File.Move(preference, PreferencePath(tool), overwrite: true);
-        }
-        finally { DeleteStagingDirectory(staging); }
+        token.ThrowIfCancellationRequested();
+        _configuration.Update(settings => WithPreference(settings, tool, installed.Tag));
     }
 
     public void DeleteVersion(MediaTool kind, string tag)
@@ -84,8 +81,8 @@ public sealed class ToolUpdater
             cleanStaging = false;
             try
             {
-                if (ReadPreference(tool) == tag)
-                    File.Delete(PreferencePath(tool));
+                _configuration.Update(settings => ReadPreference(settings.Tools, tool) == tag ?
+                    WithPreference(settings, tool, null) : settings);
                 cleanStaging = true;
             }
             catch
@@ -102,7 +99,8 @@ public sealed class ToolUpdater
         }
     }
 
-    public void SelectLatest(MediaTool kind) => File.Delete(PreferencePath(Definition(kind)));
+    public void SelectLatest(MediaTool kind) =>
+        _configuration.Update(settings => WithPreference(settings, Definition(kind), null));
 
     public string DenoPath => Path.Combine(_directory, "deno", DenoVersion, "deno.exe");
 
@@ -521,7 +519,7 @@ public sealed class ToolUpdater
     private InstalledTool? FindActive(Tool tool, InstalledTool[]? versions = null)
     {
         versions ??= ReadInstalled(tool);
-        string? preferred = ReadPreference(tool);
+        string? preferred = ReadPreference(_configuration.Current.Tools, tool);
         return versions.FirstOrDefault(version => version.Tag == preferred) ?? versions.FirstOrDefault();
     }
 
@@ -529,14 +527,11 @@ public sealed class ToolUpdater
         ReadInstalled(tool).FirstOrDefault(version => version.Tag == tag)
         ?? throw new InvalidOperationException($"{tool.Name} {tag} 未安装。");
 
-    private string PreferencePath(Tool tool) => Path.Combine(_directory, tool.Name, "selected-version.txt");
+    private static string? ReadPreference(ToolSettings preferences, Tool tool) =>
+        tool == Ffmpeg ? preferences.Ffmpeg : preferences.YtDlp;
 
-    private string? ReadPreference(Tool tool)
-    {
-        try { return File.ReadAllText(PreferencePath(tool)).Trim(); }
-        catch (FileNotFoundException) { return null; }
-        catch (DirectoryNotFoundException) { return null; }
-    }
+    private static AppSettings WithPreference(AppSettings settings, Tool tool, string? tag) =>
+        settings with { Tools = tool == Ffmpeg ? settings.Tools with { Ffmpeg = tag } : settings.Tools with { YtDlp = tag } };
 
     private InstalledTool[] ReadInstalled(Tool tool)
     {

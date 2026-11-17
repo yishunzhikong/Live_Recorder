@@ -207,7 +207,11 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         }
         catch (OperationCanceledException) when (task.IsCancellationRequested) { }
         catch (OperationCanceledException) { ShowMessage(InfoBarSeverity.Error, "操作超时，请重试。"); }
-        catch (Exception ex) { ShowMessage(InfoBarSeverity.Error, ex.Message); }
+        catch (Exception ex)
+        {
+            PortableStorage.Log.Write(LogLevel.Debug, "ToolVersions", $"处理 {ToolName} 版本时发生异常。", ex);
+            ShowMessage(InfoBarSeverity.Error, ex.Message);
+        }
         finally
         {
             _task = null;
@@ -223,12 +227,19 @@ public sealed partial class ToolVersionsDialog : ContentDialog
         MessageBar.Severity = severity;
         MessageBar.Message = message;
         MessageBar.IsOpen = true;
+        LogLevel level = severity switch
+        {
+            InfoBarSeverity.Error => LogLevel.Error,
+            InfoBarSeverity.Warning => LogLevel.Warning,
+            _ => LogLevel.Information
+        };
+        PortableStorage.Log.Write(level, "ToolVersions", message);
     }
 
     private void ReportWebFallback(CancellationToken token) => DispatcherQueue.TryEnqueue(() =>
     {
         if (_task?.Token == token)
-            ShowMessage(InfoBarSeverity.Informational, "GitHub API 查询失败（HTTP 403），正在使用官方发布页查询。");
+            ShowMessage(InfoBarSeverity.Warning, "GitHub API 查询失败（HTTP 403），正在使用官方发布页查询。");
     });
 
     private void Dialog_Closing(ContentDialog sender, ContentDialogClosingEventArgs args)

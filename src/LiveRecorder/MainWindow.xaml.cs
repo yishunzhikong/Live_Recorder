@@ -25,19 +25,16 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
         InitializePreviewControls();
         _handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        OutputBox.Text = PortableStorage.DownloadsDirectory();
         StatusDetail.Text = "粘贴媒体链接，或选择要处理的本地文件。";
-        try
-        {
-            Directory.CreateDirectory(PortableStorage.ToolsDirectory);
-            Directory.CreateDirectory(PortableStorage.CacheDirectory);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            SetStatus("无法创建便携数据目录", $"请确认程序目录可写。{Environment.NewLine}{ex.Message}");
-        }
         ModeBox.SelectionChanged += Mode_SelectionChanged;
-        SourceBox.TextChanged += (_, _) => UpdateRecordButton();
+        RestoreMediaSettings();
+        if (PortableStorage.InitializationError is { } error)
+            SetStatus("无法载入便携配置", error.Message, LogLevel.Warning);
+        Closed += (_, _) =>
+        {
+            SaveMediaSettings();
+            PortableStorage.Log.Write(LogLevel.Information, "Application", "Live Recorder 已退出。");
+        };
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
         WindowAspect.Apply(AppWindow, _handle);
@@ -62,12 +59,13 @@ public sealed partial class MainWindow : Window
     {
         Uri source = SelectedMediaSource();
         string directory = OutputDirectory();
-        VideoEncoder encoder = SelectedEncoder();
+        MediaSettings settings = PortableStorage.Configuration.Current.Media;
         if (source.Scheme is "rtp" or "udp")
             await ReleaseDatagramPreviewAsync(source);
-        RecordingResult recording = await _media.RecordAsync(source, directory, PartSize(), encoder,
-            CreateProgress(), token, SelectedDeinterlaceMode());
-        await FinishRecordingAsync(recording, directory, encoder);
+        RecordingResult recording = await _media.RecordAsync(source, directory, settings.PartSizeMb, settings.Encoder,
+            CreateProgress(), token, settings.Deinterlace, settings.Encoding, SelectedWebFormat?.IsLive, RecordingEvents(token),
+            _mode == AppMode.Live ? settings.Reconnect : null);
+        await FinishRecordingAsync(recording, directory, settings);
     });
 
     private async void RecordSdp_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
@@ -78,54 +76,47 @@ public sealed partial class MainWindow : Window
         await RunAsync("录制中", async token =>
         {
             string directory = OutputDirectory();
-            VideoEncoder encoder = SelectedEncoder();
+            MediaSettings settings = PortableStorage.Configuration.Current.Media;
             await ReleaseDatagramPreviewAsync();
-            RecordingResult recording = await _media.RecordSdpAsync(file, directory, PartSize(), encoder,
-                CreateProgress(), token, SelectedDeinterlaceMode());
-            await FinishRecordingAsync(recording, directory, encoder);
+            RecordingResult recording = await _media.RecordSdpAsync(file, directory, settings.PartSizeMb, settings.Encoder,
+                CreateProgress(), token, settings.Deinterlace, settings.Encoding, RecordingEvents(token), settings.Reconnect);
+            await FinishRecordingAsync(recording, directory, settings);
         });
     });
 
     private async void Merge_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
     {
-        string? folder = await PickFolderAsync();
+        string? folder = NativeOutputPicker.Pick(_handle, _defaultOutput, "选择录制分片文件夹", pickFolder: true);
         if (folder is null)
             return;
         await RunAsync("合并中", async token =>
         {
             _lastResultFolder = folder;
-            string output = await _media.MergeAsync(folder, OutputDirectory(), SelectedEncoder(),
-                ReencodeBox.IsChecked != true, CreateProgress(), token, SelectedDeinterlaceMode());
+            MediaSettings settings = PortableStorage.Configuration.Current.Media;
+            string output = await _media.MergeAsync(folder, OutputDirectory(), settings.Encoder,
+                !settings.Reencode, CreateProgress(), token, settings.Deinterlace, settings.Encoding);
             ShowOutput("合并完成", output);
         });
     });
 
     private async void Transcode_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
     {
-        string? file = await PickFileAsync("*");
+        string? file = NativeOutputPicker.Pick(_handle, _defaultOutput, "选择要转码的媒体", pickFolder: false);
         if (file is null)
             return;
         await RunAsync("转码中", async token =>
         {
-            string output = await _media.TranscodeAsync(file, OutputDirectory(), SelectedEncoder(),
-                CreateProgress(), token, SelectedDeinterlaceMode());
+            MediaSettings settings = PortableStorage.Configuration.Current.Media;
+            string output = await _media.TranscodeAsync(file, OutputDirectory(), settings.Encoder,
+                CreateProgress(), token, settings.Deinterlace, settings.Encoding);
             ShowOutput("转码完成", output);
         });
-    });
-
-    private async void PickOutput_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
-    {
-        if (await PickFolderAsync() is { } folder)
-        {
-            OutputBox.Text = folder;
-            _lastResultFolder = null;
-        }
     });
 
     private async Task HandlePickerAsync(Func<Task> action)
     {
         try { await action(); }
-        catch (Exception ex) { SetStatus("无法完成操作", ex.Message); }
+        catch (Exception ex) { SetStatus("无法完成操作", ex.Message, LogLevel.Error, ex); }
     }
 
     private async Task<string?> PickFolderAsync()
@@ -144,17 +135,32 @@ public sealed partial class MainWindow : Window
         return (await picker.PickSingleFileAsync())?.Path;
     }
 
-    private async Task FinishRecordingAsync(RecordingResult recording, string directory, VideoEncoder encoder)
+    private IProgress<RecordingEvent> RecordingEvents(CancellationToken token) => new Progress<RecordingEvent>(update =>
     {
-        _lastResultFolder = recording.Directory;
-        string summary = $"已保存 {recording.PartCount} 个分片。{Environment.NewLine}{recording.Directory}";
+        string title = update.Recovered ? "录制已恢复" : "等待重连";
+        string detail = $"{update.Time:yyyy-MM-dd HH:mm:ss zzz} · {update.Detail}";
+        LogLevel level = update.Recovered ? LogLevel.Information : LogLevel.Warning;
+        if (_operation?.Token == token && !token.IsCancellationRequested)
+            SetStatus(title, detail, level);
+        else
+            PortableStorage.Log.Write(level, "Recording", $"{title} · {detail}");
+    });
+
+    private async Task FinishRecordingAsync(RecordingResult recording, string directory, MediaSettings settings)
+    {
+        IReadOnlyList<RecordingFolder> folders = recording.Folders;
+        _lastResultFolder = folders.Count == 1 ? folders[0].Directory : directory;
+        string summary = $"已保存 {folders.Count} 个录制文件夹，共 {folders.Sum(folder => folder.PartCount)} 个分片。";
+        if (folders.Any(folder => folder.Reencoded))
+            summary += $"{Environment.NewLine}部分原流无法直接封装为录制分片，已按编码设置录制。";
         if (recording.Interruption is not null)
             summary += $"{Environment.NewLine}{recording.Interruption}";
         string title = recording.Interruption is null ? "录制完成" : "录制中断，已保留分片";
         StopProgressUpdates();
         TaskProgress.Visibility = Visibility.Collapsed;
         StopButton.IsEnabled = false;
-        SetStatus(title, summary);
+        SetStatus(title, $"{summary}{Environment.NewLine}{_lastResultFolder}",
+            recording.Interruption is null ? LogLevel.Information : LogLevel.Warning);
         if (_closeWhenIdle)
             return;
 
@@ -162,7 +168,18 @@ public sealed partial class MainWindow : Window
         {
             XamlRoot = ((FrameworkElement)Content).XamlRoot,
             Title = "合并录制分片？",
-            Content = new TextBlock { Text = summary, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true },
+            Content = new ScrollViewer
+            {
+                MaxHeight = 300,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                Content = new TextBlock
+                {
+                    Text = string.Join(Environment.NewLine, new[] { summary, "" }.Concat(folders.Select(folder =>
+                        $"{Path.GetFileName(folder.Directory)} · {folder.PartCount} 片"))),
+                    TextWrapping = TextWrapping.Wrap,
+                    IsTextSelectionEnabled = true
+                }
+            },
             PrimaryButtonText = "原样合并",
             SecondaryButtonText = "重新编码后合并",
             CloseButtonText = "保留分片",
@@ -176,11 +193,35 @@ public sealed partial class MainWindow : Window
 
         _operation!.Dispose();
         _operation = new CancellationTokenSource();
+        CancellationToken token = _operation.Token;
         StartStage("合并中");
-        // The current recording already applied the selected deinterlacing mode.
-        string output = await _media.MergeAsync(recording.Directory, directory, encoder,
-            choice == ContentDialogResult.Primary, CreateProgress(), _operation.Token, DeinterlaceMode.Off);
-        ShowOutput("合并完成", output);
+        int succeeded = 0;
+        int failed = 0;
+        foreach (RecordingFolder folder in folders)
+        {
+            token.ThrowIfCancellationRequested();
+            SetStatus($"合并中（{succeeded + failed + 1}/{folders.Count}）", Path.GetFileName(folder.Directory));
+            try
+            {
+                string output = await _media.MergeAsync(folder.Directory, directory, settings.Encoder,
+                    choice == ContentDialogResult.Primary, CreateProgress(), token, settings.Deinterlace, settings.Encoding);
+                _lastResultFile = output;
+                _lastResultFolder = Path.GetDirectoryName(output);
+                PlayResultButton.IsEnabled = true;
+                succeeded++;
+                PortableStorage.Log.Write(LogLevel.Information, "Recording", $"已合并 {folder.Directory} → {output}");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException || !token.IsCancellationRequested)
+            {
+                failed++;
+                PortableStorage.Log.Write(LogLevel.Error, "Recording", $"合并失败，已保留分片。{folder.Directory}", ex);
+            }
+        }
+        string result = $"已合并 {succeeded}/{folders.Count} 个录制文件夹。";
+        if (failed > 0)
+            result += $" {failed} 个合并失败，分片已保留，详情见日志。";
+        SetStatus(failed > 0 ? "合并已结束" : "合并完成", $"{result}{Environment.NewLine}{directory}",
+            failed > 0 ? LogLevel.Warning : LogLevel.Information);
     }
 
     private async Task RunAsync(string title, Func<CancellationToken, Task> action)
@@ -196,9 +237,9 @@ public sealed partial class MainWindow : Window
             if (_operation.IsCancellationRequested)
                 SetStatus("已停止", "任务已停止。");
             else
-                SetStatus("连接超时", "服务器长时间未返回媒体数据。请检查链接和网络连接。");
+                SetStatus("连接超时", "服务器长时间未返回媒体数据。请检查链接和网络连接。", LogLevel.Warning);
         }
-        catch (Exception ex) { SetStatus("任务失败", ex.Message); }
+        catch (Exception ex) { SetStatus("任务失败", ex.Message, LogLevel.Error, ex); }
         finally
         {
             StopProgressUpdates();
@@ -333,23 +374,24 @@ public sealed partial class MainWindow : Window
             Directory.CreateDirectory(directory);
             Process.Start(new ProcessStartInfo { FileName = directory, UseShellExecute = true })?.Dispose();
         }
-        catch (Exception ex) { SetStatus("无法打开文件夹", ex.Message); }
+        catch (Exception ex) { SetStatus("无法打开文件夹", ex.Message, LogLevel.Error, ex); }
     }
 
     private void SetControlsEnabled(bool enabled)
     {
         ToolsMenu.IsEnabled = enabled;
         foreach (Control control in new Control[] { ModeBox, WebSourceBox, AnalyzeWebButton,
-            SourceBox, PreviewLinkButton, DownloadButton, RecordButton, SdpButton, OutputBox, OutputPickerButton,
-            EncoderBox, DeinterlaceBox, PartSizeBox, MergeButton, TranscodeButton, ReencodeBox, OpenOutputButton })
+            SourceBox, RecordingStallBox, RecordingRetryBox, RecordingWaitBox,
+            PreviewLinkButton, DownloadButton, RecordButton, SdpButton, MergeButton, TranscodeButton, OpenOutputButton })
             control.IsEnabled = enabled;
         UpdateWebActions(enabled);
     }
 
-    private void SetStatus(string title, string detail)
+    private void SetStatus(string title, string detail, LogLevel level = LogLevel.Information, Exception? error = null)
     {
         StatusTitle.Text = title;
         StatusDetail.Text = detail;
+        PortableStorage.Log.Write(level, "Task", $"{title} · {detail}", error);
     }
 
     private void ShowOutput(string title, string file)
@@ -360,23 +402,15 @@ public sealed partial class MainWindow : Window
         SetStatus(title, file);
     }
 
-    private string OutputDirectory()
+    private string OutputDirectory() =>
+        NormalizeOutputDirectory(PortableStorage.Configuration.Current.Media.OutputDirectory ?? _defaultOutput);
+
+    private static string NormalizeOutputDirectory(string value)
     {
-        string directory = Environment.ExpandEnvironmentVariables(OutputBox.Text.Trim().Trim('"'));
+        string directory = Environment.ExpandEnvironmentVariables(value.Trim().Trim('"'));
         if (!Path.IsPathFullyQualified(directory))
             throw new ArgumentException("请选择有效的输出文件夹。");
         return Path.GetFullPath(directory);
     }
 
-    private int PartSize()
-    {
-        double size = PartSizeBox.Value;
-        if (!double.IsFinite(size) || size != Math.Truncate(size) || size is < 1 or > 1024)
-            throw new ArgumentException("请将分片大小设为 1 到 1024 MB 的整数。");
-        return (int)size;
-    }
-
-    private VideoEncoder SelectedEncoder() => (VideoEncoder)EncoderBox.SelectedIndex;
-
-    private DeinterlaceMode SelectedDeinterlaceMode() => (DeinterlaceMode)DeinterlaceBox.SelectedIndex;
 }

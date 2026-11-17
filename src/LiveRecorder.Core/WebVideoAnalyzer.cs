@@ -72,12 +72,14 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
     {
         token.ThrowIfCancellationRequested();
         string executable = ToolProcess.RequireExecutable(ffmpeg, "FFmpeg");
+        string inputArgs = link.IsLive ? "-rw_timeout 15000000" : "-rw_timeout 15000000 -re";
         ProcessStartInfo start = CreateStartInfo(
             [.. AudioOptions(link, executable), "--output", "-", "--no-part", "--quiet",
                 // Let FFmpeg seek over HTTP when a file puts its index at the end.
-                "--downloader", "http:ffmpeg",
-                "--downloader-args", "ffmpeg_i:-rw_timeout 15000000",
-                "--downloader-args", "ffmpeg_o:-f matroska"],
+                "--downloader", "ffmpeg",
+                "--downloader-args", $"ffmpeg_i:{inputArgs}",
+                // A transport stream carries a clock for VLC when the input pipe cannot seek.
+                "--downloader-args", "ffmpeg_o:-vn -c:a aac -b:a 160k -f mpegts -muxdelay 0.1 -flush_packets 1"],
             link.PageUrl);
         start.Environment["PATH"] = Path.GetDirectoryName(executable) + Path.PathSeparator
             + Environment.GetEnvironmentVariable("PATH");

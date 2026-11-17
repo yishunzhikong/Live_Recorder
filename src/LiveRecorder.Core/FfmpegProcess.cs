@@ -4,6 +4,12 @@ using System.Text;
 
 namespace LiveRecorder.Core;
 
+internal sealed class FfmpegFailureException(int exitCode, string[] diagnostics) :
+    InvalidOperationException($"FFmpeg 退出（{exitCode}）。{Environment.NewLine}{string.Join(Environment.NewLine, diagnostics)}")
+{
+    public IReadOnlyList<string> Diagnostics { get; } = diagnostics;
+}
+
 internal static class FfmpegProcess
 {
     public static async Task RunAsync(
@@ -14,7 +20,9 @@ internal static class FfmpegProcess
         CancellationToken cancellationToken,
         Func<Stream, Task>? readOutput = null,
         Func<Stream, CancellationToken, Task>? writeInput = null,
-        bool finishOnCancellation = false)
+        bool finishOnCancellation = false,
+        Action? videoWritten = null,
+        Action<string>? readDiagnostic = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ProcessStartInfo start = ToolProcess.CreateStartInfo(ToolProcess.RequireExecutable(executable, "FFmpeg"), cacheDirectory);
@@ -25,7 +33,7 @@ internal static class FfmpegProcess
         using var process = new Process { StartInfo = start };
         foreach (string argument in new[] { "-hide_banner", "-loglevel", "warning", "-nostats" })
             process.StartInfo.ArgumentList.Add(argument);
-        if (progress is not null)
+        if (progress is not null || videoWritten is not null)
         {
             process.StartInfo.ArgumentList.Add("-progress");
             process.StartInfo.ArgumentList.Add("pipe:2");
@@ -42,7 +50,7 @@ internal static class FfmpegProcess
         using var exitMonitoring = new CancellationTokenSource();
         using var inputWriting = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var diagnostics = new Queue<string>();
-        Task errors = ReadErrorsAsync(process, diagnostics, progress);
+        Task errors = ReadErrorsAsync(process, diagnostics, progress, videoWritten, readDiagnostic);
         Task exit = process.WaitForExitAsync();
         Task output = readOutput?.Invoke(process.StandardOutput.BaseStream) ?? Task.CompletedTask;
         Task input = writeInput is null
@@ -64,7 +72,7 @@ internal static class FfmpegProcess
             if (!finishOnCancellation)
                 cancellationToken.ThrowIfCancellationRequested();
             if (process.ExitCode != 0 && !(finishOnCancellation && cancellationToken.IsCancellationRequested))
-                throw new InvalidOperationException($"FFmpeg 退出（{process.ExitCode}）。{Environment.NewLine}{string.Join(Environment.NewLine, diagnostics)}");
+                throw new FfmpegFailureException(process.ExitCode, diagnostics.ToArray());
             await input.ConfigureAwait(false);
         }
         finally
@@ -84,22 +92,31 @@ internal static class FfmpegProcess
             await writeInput(stream, cancellationToken).ConfigureAwait(false);
     }
 
-    private static async Task ReadErrorsAsync(Process process, Queue<string> diagnostics, IProgress<MediaProgress>? progress)
+    private static async Task ReadErrorsAsync(Process process, Queue<string> diagnostics, IProgress<MediaProgress>? progress,
+        Action? videoWritten, Action<string>? readDiagnostic)
     {
+        bool readProgress = progress is not null || videoWritten is not null;
         while (await process.StandardError.ReadLineAsync().ConfigureAwait(false) is { } line)
         {
-            int separator = progress is null ? -1 : line.IndexOf('=');
+            int separator = readProgress ? line.IndexOf('=') : -1;
             if (separator > 0 && line[..separator].All(c => char.IsAsciiLetterOrDigit(c) || c == '_'))
             {
                 if (line.StartsWith("out_time_us=", StringComparison.Ordinal) &&
                     long.TryParse(line.AsSpan(separator + 1), CultureInfo.InvariantCulture, out long time) &&
                     time >= 0 && time <= TimeSpan.MaxValue.Ticks / 10)
                     progress?.Report(new MediaProgress(MediaTime: TimeSpan.FromMicroseconds(time)));
+                if (videoWritten is not null && line.StartsWith("frame=", StringComparison.Ordinal) &&
+                    long.TryParse(line.AsSpan(separator + 1), CultureInfo.InvariantCulture, out long frames) && frames > 0)
+                {
+                    videoWritten();
+                    videoWritten = null;
+                }
                 continue;
             }
 
             if (!string.IsNullOrWhiteSpace(line))
             {
+                readDiagnostic?.Invoke(line);
                 if (diagnostics.Count == 10)
                     diagnostics.Dequeue();
                 diagnostics.Enqueue(line);

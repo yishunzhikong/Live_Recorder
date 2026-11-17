@@ -25,8 +25,8 @@ internal static partial class RecordingParts
         return files;
     }
 
-    public static async Task SplitAsync(Stream source, string directory, string cacheDirectory,
-        long maximumBytes, IProgress<MediaProgress>? progress)
+    public static async Task SplitAsync(Stream source, Func<string> createDirectory, string cacheDirectory,
+        long maximumBytes, IProgress<MediaProgress>? progress, Action received)
     {
         long limit = maximumBytes / PacketSize * PacketSize;
         byte[] buffer = new byte[BufferSize];
@@ -34,6 +34,7 @@ internal static partial class RecordingParts
         long total = 0;
         int buffered = 0;
         FileStream? destination = null;
+        string? directory = null;
         string incompletePath = Path.Combine(cacheDirectory, $"record-{Guid.NewGuid():N}.part");
         try
         {
@@ -42,6 +43,7 @@ internal static partial class RecordingParts
                 int read = await source.ReadAsync(buffer.AsMemory(buffered)).ConfigureAwait(false);
                 if (read == 0)
                     break;
+                received();
                 int length = buffered + read;
                 int packetBytes = length / PacketSize * PacketSize;
                 int offset = 0;
@@ -49,6 +51,7 @@ internal static partial class RecordingParts
                 {
                     if (destination is null)
                     {
+                        directory ??= createDirectory();
                         destination = new FileStream(incompletePath, FileMode.CreateNew, FileAccess.Write, FileShare.Read,
                             BufferSize, FileOptions.Asynchronous);
                     }
@@ -76,7 +79,7 @@ internal static partial class RecordingParts
         {
             await destination!.DisposeAsync().ConfigureAwait(false);
             destination = null;
-            File.Move(incompletePath, Path.Combine(directory, $"part-{partNumber + 1:D8}.ts"));
+            File.Move(incompletePath, Path.Combine(directory!, $"part-{partNumber + 1:D8}.ts"));
             partNumber++;
             progress?.Report(new MediaProgress(Bytes: total, Parts: partNumber));
         }

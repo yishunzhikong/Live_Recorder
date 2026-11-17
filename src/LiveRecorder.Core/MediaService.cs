@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Xml;
 
 namespace LiveRecorder.Core;
 
@@ -10,9 +11,7 @@ public enum VideoEncoder { Software, Intel, Nvidia, Amd }
 public enum DeinterlaceMode { Automatic, Always, Off }
 
 public sealed record MediaProgress(long? Bytes = null, long? TotalBytes = null, int? Parts = null, TimeSpan? MediaTime = null);
-public sealed record RecordingResult(string Directory, int PartCount, string? Interruption);
-
-public sealed class MediaService(string? ffmpeg, string cacheDirectory)
+public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
 {
     private const int CopyBuffer = 128 * 1024;
     private const long DefaultTimeoutMicroseconds = 15_000_000;
@@ -32,6 +31,85 @@ public sealed class MediaService(string? ffmpeg, string cacheDirectory)
         return uri;
     }
 
+    public static async Task<bool> HasFixedPreviewDurationAsync(Uri source, CancellationToken token) =>
+        (await InspectHttpMediaAsync(source, token).ConfigureAwait(false))?.HasFixedDuration == true;
+
+    private sealed record HttpMediaState(bool HasFixedDuration, string? LastHlsSegment = null);
+
+    private static async Task<HttpMediaState?> InspectHttpMediaAsync(Uri source, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(5));
+        try { return await ReadHttpMediaAsync(source, 0, timeout.Token).ConfigureAwait(false); }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException or XmlException)
+        {
+            return null;
+        }
+    }
+
+    private static async Task<HttpMediaState?> ReadHttpMediaAsync(Uri source, int depth, CancellationToken token)
+    {
+        if (depth > 3 || source.Scheme is not ("http" or "https"))
+            return null;
+        using var response = await Http.GetAsync(source, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode)
+            return null;
+        Uri location = response.RequestMessage?.RequestUri ?? source;
+        string? mime = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant();
+        await using Stream stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
+        byte[] prefix = new byte[512];
+        int count = await stream.ReadAtLeastAsync(prefix, prefix.Length, throwOnEndOfStream: false, cancellationToken: token)
+            .ConfigureAwait(false);
+        string head = Encoding.UTF8.GetString(prefix, 0, count).TrimStart('\uFEFF', ' ', '\r', '\n', '\t');
+        bool hls = head.StartsWith("#EXTM3U", StringComparison.Ordinal) || IsPlaylistPath(location.AbsolutePath) ||
+            mime is "application/vnd.apple.mpegurl" or "application/x-mpegurl" or "audio/mpegurl" or "audio/x-mpegurl";
+        if (!hls && !head.StartsWith('<') && mime != "application/dash+xml" &&
+            !location.AbsolutePath.EndsWith(".mpd", StringComparison.OrdinalIgnoreCase))
+        {
+            return new(count > 0 && (response.Content.Headers.ContentRange?.Length ?? response.Content.Headers.ContentLength) > 0);
+        }
+
+        // Inspect a bounded manifest so an indeterminate response cannot consume playback resources.
+        byte[] manifest = new byte[hls ? 1024 * 1024 : 8192];
+        prefix.AsSpan(0, count).CopyTo(manifest);
+        count += await stream.ReadAtLeastAsync(manifest.AsMemory(count), manifest.Length - count,
+            throwOnEndOfStream: false, cancellationToken: token).ConfigureAwait(false);
+        if (!hls)
+        {
+            using var input = new MemoryStream(manifest, 0, count);
+            using var xml = XmlReader.Create(input, new XmlReaderSettings { DtdProcessing = DtdProcessing.Prohibit });
+            return new(xml.MoveToContent() == XmlNodeType.Element && xml.LocalName == "MPD" &&
+                xml.GetAttribute("type") is null or "static");
+        }
+
+        using var lines = new StringReader(Encoding.UTF8.GetString(manifest, 0, count));
+        Uri? variant = null;
+        bool variantPath = false;
+        bool ended = false;
+        string? sequence = null;
+        string? lastSegment = null;
+        while (lines.ReadLine()?.Trim() is { } line)
+        {
+            if (line == "#EXT-X-ENDLIST")
+                ended = true;
+            else if (line.StartsWith("#EXT-X-MEDIA-SEQUENCE:", StringComparison.Ordinal))
+                sequence = line;
+            else if (line.StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal))
+                variantPath = true;
+            else if (variantPath && line.Length != 0 && !line.StartsWith('#'))
+            {
+                if (variant is null)
+                    Uri.TryCreate(location, line, out variant);
+                variantPath = false;
+            }
+            else if (line.Length != 0 && !line.StartsWith('#'))
+                lastSegment = line;
+        }
+        if (variant is not null)
+            return await ReadHttpMediaAsync(variant, depth + 1, token).ConfigureAwait(false);
+        return new(ended, lastSegment is null ? null : $"{sequence}\n{lastSegment}");
+    }
+
     public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress, CancellationToken token)
     {
         bool httpSource = source.Scheme is "http" or "https";
@@ -42,18 +120,15 @@ public sealed class MediaService(string? ffmpeg, string cacheDirectory)
                 return directFile;
         }
 
-        string output = NewOutput(directory, "download", ".mkv");
-        return await WriteMediaAsync(output, NetworkInput(source, hls: httpSource), ["-c", "copy"], "matroska", progress, token)
-            .ConfigureAwait(false);
+        DateTime started = DateTime.Now;
+        string output = Path.Combine(Path.GetFullPath(directory), TimestampedName("video", started) + ".mkv");
+        return await WriteMediaAsync(output, NetworkInput(source, hls: httpSource), ["-c", "copy"], "matroska", progress, token,
+            audioName: TimestampedName("audio", started)).ConfigureAwait(false);
     }
 
     public static string SaveDownloadedAudio(string stagedFile, string directory, DateTime completedAt) =>
         MoveToAvailableName(stagedFile, Directory.CreateDirectory(directory).FullName, FormattableString.Invariant($"audio_{completedAt:yyyyMMdd_HHmmss}"),
             ".m4a");
-
-    public Task<RecordingResult> RecordAsync(Uri source, string directory, int partMegabytes, VideoEncoder encoder,
-        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic) =>
-        RecordAsync(NetworkInput(source), directory, partMegabytes, encoder, progress, token, deinterlace);
 
     public PreviewStream OpenNetworkPreview(Uri source, CancellationToken token)
     {
@@ -65,101 +140,125 @@ public sealed class MediaService(string? ffmpeg, string cacheDirectory)
         return PreviewStream.Start(start, "FFmpeg 无法读取预览媒体流。", token);
     }
 
-    public Task<RecordingResult> RecordSdpAsync(string path, string directory, int partMegabytes, VideoEncoder encoder,
-        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic)
-    {
-        if (!Path.GetExtension(path).Equals(".sdp", StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
-            throw new ArgumentException("请选择有效的本地 SDP 文件。");
-        return RecordAsync(["-protocol_whitelist", "file,udp,rtp", "-f", "sdp", "-i", Path.GetFullPath(path)],
-            directory, partMegabytes, encoder, progress, token, deinterlace);
-    }
-
-    public Task<string> MergeAsync(string recordingDirectory, string directory, VideoEncoder encoder, bool copy,
-        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic)
+    public async Task<string> MergeAsync(string recordingDirectory, string directory, VideoEncoder encoder, bool copy,
+        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
+        EncodingSettings? settings = null)
     {
         recordingDirectory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(recordingDirectory));
         FileInfo[] parts = RecordingParts.Find(recordingDirectory);
         if (parts.Length == 0)
             throw new InvalidOperationException("所选文件夹没有可用的 Live Recorder 录制分片。");
         string name = Path.GetFileName(recordingDirectory);
-        string output = Path.Combine(Path.GetFullPath(directory), (name.Length == 0 ? "record" : name) + ".mp4");
-        return WriteMediaAsync(output, ["-nostdin", "-f", "mpegts", "-i", "pipe:0"],
-            copy ? ["-c", "copy", "-bsf:a", "aac_adtstoasc"] : Encode(encoder, deinterlace), "mp4", progress, token,
-            async (pipe, ct) =>
+        string[] input = ["-nostdin", "-f", "mpegts", "-i", "pipe:0"];
+        SourceEncodingInfo source = await ProbeEncodingAsync(input, token, WritePartsAsync).ConfigureAwait(false);
+        EncodingSettings encoding = settings ?? DefaultTranscodeSettings;
+        string[] codecs = copy ? ["-c", "copy"] : EncodingArguments.Create(encoder, deinterlace, encoding, source);
+        var format = OutputFormat(source, copy ? source.AudioCodec : EncodingArguments.OutputAudioFormat(encoding, source));
+        string output = Path.Combine(Path.GetFullPath(directory), (name.Length == 0 ? "record" : name) + format.Extension);
+        return await WriteEditedMediaAsync(output, input, codecs, format.Muxer, progress, token, WritePartsAsync).ConfigureAwait(false);
+
+        async Task WritePartsAsync(Stream pipe, CancellationToken ct)
+        {
+            foreach (FileInfo part in parts)
             {
-                foreach (FileInfo part in parts)
-                {
-                    await using var file = new FileStream(part.FullName, FileMode.Open, FileAccess.Read, FileShare.Read,
-                        bufferSize: 4096, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
-                    await file.CopyToAsync(pipe, CopyBuffer, ct).ConfigureAwait(false);
-                }
-            });
+                await using var file = new FileStream(part.FullName, FileMode.Open, FileAccess.Read, FileShare.Read,
+                    bufferSize: 4096, options: FileOptions.Asynchronous | FileOptions.SequentialScan);
+                await file.CopyToAsync(pipe, CopyBuffer, ct).ConfigureAwait(false);
+            }
+        }
     }
 
-    public Task<string> TranscodeAsync(string source, string directory, VideoEncoder encoder,
-        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic)
+    public async Task<string> TranscodeAsync(string source, string directory, VideoEncoder encoder,
+        IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace = DeinterlaceMode.Automatic,
+        EncodingSettings? settings = null)
     {
         if (!File.Exists(source))
-            throw new FileNotFoundException("找不到需要转码的视频文件。", source);
-        return WriteMediaAsync(NewOutput(directory, "transcoded", ".mp4"),
-            ["-protocol_whitelist", "file", "-i", Path.GetFullPath(source)],
-            Encode(encoder, deinterlace), "mp4", progress, token);
+            throw new FileNotFoundException("找不到需要转码的媒体文件。", source);
+        string[] input = ["-protocol_whitelist", "file", "-i", Path.GetFullPath(source)];
+        SourceEncodingInfo streams = await ProbeEncodingAsync(input, token).ConfigureAwait(false);
+        EncodingSettings encoding = settings ?? DefaultTranscodeSettings;
+        string[] codecs = EncodingArguments.Create(encoder, deinterlace, encoding, streams);
+        var format = OutputFormat(streams, EncodingArguments.OutputAudioFormat(encoding, streams));
+        return await WriteEditedMediaAsync(NewOutput(directory, "transcoded", format.Extension), input, codecs, format.Muxer, progress, token)
+            .ConfigureAwait(false);
     }
 
-    private async Task<RecordingResult> RecordAsync(string[] input, string directory, int partMegabytes,
-        VideoEncoder encoder, IProgress<MediaProgress>? progress, CancellationToken token, DeinterlaceMode deinterlace)
+    private static readonly EncodingSettings DefaultTranscodeSettings = new()
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(partMegabytes, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(partMegabytes, 1024);
-        token.ThrowIfCancellationRequested();
-        string executable = ToolProcess.RequireExecutable(ffmpeg, "FFmpeg");
-        Directory.CreateDirectory(cacheDirectory);
-        string recordingDirectory = CreateRecordingDirectory(directory, DateTime.Now);
-        string? interruption = null;
-        try
-        {
-            await FfmpegProcess.RunAsync(executable, cacheDirectory,
-                [.. input, .. MapStreams(), .. Encode(encoder, deinterlace), "-f", "mpegts", "pipe:1"],
-                progress, token,
-                readOutput: stream => RecordingParts.SplitAsync(stream, recordingDirectory, cacheDirectory,
-                    partMegabytes * 1_000_000L, progress),
-                finishOnCancellation: true).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            interruption = ex.Message;
-        }
+        KeepVideoFormat = false,
+        RateMode = VideoRateMode.Quality,
+        KeepAudioFormat = false,
+        KeepAudioBitrate = false
+    };
 
-        int count = RecordingParts.Find(recordingDirectory).Length;
-        if (count == 0)
+    private async Task<SourceEncodingInfo> ProbeEncodingAsync(string[] input, CancellationToken token,
+        Func<Stream, CancellationToken, Task>? writeInput = null)
+    {
+        var source = new SourceEncodingInfo();
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(20));
+        await FfmpegProcess.RunAsync(ffmpeg, cacheDirectory,
+            ["-loglevel", "info", .. input, .. MapStreams(), "-c", "copy", "-t", "0", "-f", "null", "-"],
+            null, timeout.Token, writeInput: writeInput is null ? null : WriteProbeInputAsync, readDiagnostic: source.Read)
+            .ConfigureAwait(false);
+        if (!source.HasVideo && source.AudioCodec is null)
+            throw new InvalidOperationException("找不到可用的音频或视频轨道。");
+        return source;
+
+        async Task WriteProbeInputAsync(Stream stream, CancellationToken ct)
         {
-            if (!Directory.EnumerateFileSystemEntries(recordingDirectory).Any())
-                Directory.Delete(recordingDirectory);
-            token.ThrowIfCancellationRequested();
-            throw new InvalidOperationException(interruption ?? "录制结束，没有收到可用媒体数据。");
+            try { await writeInput!(stream, ct).ConfigureAwait(false); }
+            catch (IOException) when (!ct.IsCancellationRequested) { /* The probe closes its input after reading stream information. */ }
         }
-        return new RecordingResult(recordingDirectory, count, interruption);
+    }
+
+    private static (string Extension, string Muxer) OutputFormat(SourceEncodingInfo source, string? audioFormat) =>
+        source.HasVideo ? (".mp4", "mp4") : audioFormat switch
+        {
+            "aac" => (".m4a", "mp4"),
+            "mp3" => (".mp3", "mp3"),
+            "ac3" => (".ac3", "ac3"),
+            "eac3" => (".eac3", "eac3"),
+            "opus" => (".opus", "opus"),
+            "vorbis" => (".ogg", "ogg"),
+            "flac" => (".flac", "flac"),
+            _ => (".mka", "matroska")
+        };
+
+    private async Task<string> WriteEditedMediaAsync(string output, string[] input, string[] codecs, string format,
+        IProgress<MediaProgress>? progress, CancellationToken token, Func<Stream, CancellationToken, Task>? writeInput = null)
+    {
+        try { return await WriteMediaAsync(output, input, codecs, format, progress, token, writeInput).ConfigureAwait(false); }
+        catch (FfmpegFailureException ex) when (format == "mp4" && ex.Diagnostics.Any(line =>
+            line.Contains("Could not find tag for codec", StringComparison.OrdinalIgnoreCase) &&
+            line.Contains("not currently supported in container", StringComparison.OrdinalIgnoreCase)))
+        {
+            return await WriteMediaAsync(Path.ChangeExtension(output, ".mkv"), input, codecs, "matroska", progress, token, writeInput)
+                .ConfigureAwait(false);
+        }
     }
 
     private async Task<string> WriteMediaAsync(string output, string[] input, string[] codecs, string format,
         IProgress<MediaProgress>? progress, CancellationToken token,
-        Func<Stream, CancellationToken, Task>? writeInput = null)
+        Func<Stream, CancellationToken, Task>? writeInput = null, string? audioName = null)
     {
         string directory = Path.GetDirectoryName(output)!;
         Directory.CreateDirectory(cacheDirectory);
         string partial = Path.Combine(cacheDirectory, $"media-{Guid.NewGuid():N}.part");
         string[] containerOptions = format == "mp4" ? ["-movflags", "+faststart"] : [];
+        bool hasVideo = false;
+        Action? noteVideo = audioName is null ? null : () => hasVideo = true;
         try
         {
             await FfmpegProcess.RunAsync(ffmpeg, cacheDirectory,
                 ["-n", .. input, .. MapStreams(), .. codecs, .. containerOptions, "-f", format, partial],
-                progress, token, writeInput: writeInput).ConfigureAwait(false);
+                progress, token, writeInput: writeInput, videoWritten: noteVideo).ConfigureAwait(false);
             if (!File.Exists(partial) || new FileInfo(partial).Length == 0)
                 throw new InvalidOperationException("FFmpeg 没有生成输出文件。");
             token.ThrowIfCancellationRequested();
             Directory.CreateDirectory(directory);
-            return MoveToAvailableName(partial, directory, Path.GetFileNameWithoutExtension(output),
-                Path.GetExtension(output));
+            string name = !hasVideo && audioName is not null ? audioName : Path.GetFileNameWithoutExtension(output);
+            return MoveToAvailableName(partial, directory, name, Path.GetExtension(output));
         }
         finally { File.Delete(partial); }
     }
@@ -195,13 +294,12 @@ public sealed class MediaService(string? ffmpeg, string cacheDirectory)
         if (headerLength == 0)
             throw new InvalidDataException("服务器返回了空文件。");
 
-        string stem = Path.GetFileNameWithoutExtension(name.Replace('\\', '/'));
-        var invalid = Path.GetInvalidFileNameChars();
-        stem = string.Concat(stem.Take(70).Select(character => invalid.Contains(character) ? '_' : character)).Trim(' ', '.');
         string safeExtension = extension.Length is >= 2 and <= 10 && extension.Skip(1).All(char.IsAsciiLetterOrDigit)
             ? extension : mime switch { "video/mp4" => ".mp4", "video/webm" => ".webm", "video/mp2t" => ".ts",
                 "audio/mpeg" => ".mp3", "audio/mp4" => ".m4a", "audio/aac" => ".aac", _ => ".bin" };
-        string output = NewOutput(directory, stem.Length == 0 ? "download" : "download-" + stem, safeExtension);
+        bool audio = mime.StartsWith("audio/", StringComparison.Ordinal) ||
+            (!mime.StartsWith("video/", StringComparison.Ordinal) && IsAudioExtension(safeExtension));
+        string output = NewOutput(directory, audio ? "audio" : "video", safeExtension);
         Directory.CreateDirectory(cacheDirectory);
         string partial = Path.Combine(cacheDirectory, $"download-{Guid.NewGuid():N}.part");
         long? expected = response.Content.Headers.ContentLength;
@@ -233,9 +331,8 @@ public sealed class MediaService(string? ffmpeg, string cacheDirectory)
                 throw new IOException("下载字节数与服务器声明的大小不一致。");
             progress?.Report(new MediaProgress(Bytes: received, TotalBytes: expected));
             token.ThrowIfCancellationRequested();
-            Directory.CreateDirectory(Path.GetDirectoryName(output)!);
-            File.Move(partial, output);
-            return output;
+            string destination = Directory.CreateDirectory(Path.GetDirectoryName(output)!).FullName;
+            return MoveToAvailableName(partial, destination, Path.GetFileNameWithoutExtension(output), Path.GetExtension(output));
         }
         finally { File.Delete(partial); }
     }
@@ -254,33 +351,16 @@ public sealed class MediaService(string? ffmpeg, string cacheDirectory)
 
     private static bool IsPlaylistPath(string path) => Path.GetExtension(path).ToLowerInvariant() is ".m3u8" or ".m3u";
 
+    private static bool IsAudioExtension(string extension) =>
+        extension is ".aac" or ".aif" or ".aiff" or ".flac" or ".m4a" or ".m4b" or ".mka" or ".mp3" or ".oga" or ".opus" or ".wav" or ".weba" or ".wma";
+
     private static string[] MapStreams() => ["-map", "0:V:0?", "-map", "0:a:0?", "-sn", "-dn"];
 
-    private static string[] Encode(VideoEncoder encoder, DeinterlaceMode deinterlace)
-    {
-        string codec = encoder switch
-        {
-            VideoEncoder.Software => "libx264",
-            VideoEncoder.Intel => "h264_qsv",
-            VideoEncoder.Nvidia => "h264_nvenc",
-            VideoEncoder.Amd => "h264_amf",
-            _ => throw new ArgumentOutOfRangeException(nameof(encoder))
-        };
-        string pixelFormat = encoder == VideoEncoder.Intel ? "nv12" : "yuv420p";
-        return ["-vf", VideoFilters("scale=trunc(iw/2)*2:trunc(ih/2)*2", deinterlace), "-pix_fmt", pixelFormat,
-            "-c:v", codec, "-c:a", "aac", "-b:a", "160k"];
-    }
-
-    private static string VideoFilters(string scale, DeinterlaceMode deinterlace) => deinterlace switch
-    {
-        DeinterlaceMode.Automatic => $"bwdif=mode=send_frame:parity=auto:deint=interlaced,{scale}",
-        DeinterlaceMode.Always => $"bwdif=mode=send_frame:parity=auto:deint=all,{scale}",
-        DeinterlaceMode.Off => scale,
-        _ => throw new ArgumentOutOfRangeException(nameof(deinterlace))
-    };
-
     private static string NewOutput(string directory, string name, string extension) =>
-        Path.Combine(Path.GetFullPath(directory), $"{name}_{DateTime.Now:yyyyMMdd_HHmmss}_{Guid.NewGuid():N}{extension}");
+        Path.Combine(Path.GetFullPath(directory), TimestampedName(name, DateTime.Now) + extension);
+
+    private static string TimestampedName(string prefix, DateTime started) =>
+        FormattableString.Invariant($"{prefix}_{started:yyyyMMdd_HHmmss}");
 
     private static string CreateRecordingDirectory(string directory, DateTime startedAt)
     {

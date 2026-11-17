@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Text.Json;
+using LiveRecorder.Core;
 
 namespace LiveRecorder;
 
@@ -6,6 +8,30 @@ internal static class PortableStorage
 {
     public static string ToolsDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "tools");
     public static string CacheDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "cache");
+    public static string LogsDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "logs");
+    public static string ConfigDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "config");
+    public static string DefaultOutputDirectory() => Path.Combine(DownloadsDirectory(), "LiveRecorder");
+    public static PortableConfiguration Configuration { get; } = new(ConfigDirectory);
+    public static PortableLog Log { get; } = new(LogsDirectory);
+    public static Exception? InitializationError { get; private set; }
+
+    public static void Initialize()
+    {
+        try
+        {
+            Directory.CreateDirectory(ToolsDirectory);
+            Directory.CreateDirectory(CacheDirectory);
+            Directory.CreateDirectory(LogsDirectory);
+            Configuration.Load(ToolsDirectory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            InitializationError = ex;
+        }
+        Log.Configure(Configuration.Current.Logging);
+        if (InitializationError is { } error)
+            Log.Write(LogLevel.Warning, "Configuration", "无法初始化便携数据目录或读取配置。", error);
+    }
 
     public static string DownloadsDirectory()
     {

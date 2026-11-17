@@ -29,6 +29,11 @@
                 <MenuFlyoutSeparator />
                 <MenuFlyoutItem Text="工具版本管理…" Click="ManageToolVersions_Click" />
             </MenuBarItem>
+            <MenuBarItem Title="选项">
+                <MenuFlyoutItem Text="保存到…" Click="OutputOptions_Click" />
+                <MenuFlyoutItem Text="编码设置…" Click="EncodingOptions_Click" />
+                <MenuFlyoutItem Text="日志设置…" Click="LogOptions_Click" />
+            </MenuBarItem>
         </MenuBar>
 
         <Border Grid.Row="1" Style="{StaticResource Card}">
@@ -41,6 +46,12 @@
                     </ComboBox>
                     <TextBox x:Name="SourceBox" Header="媒体链接" PlaceholderText="HTTP、M3U8、RTSP、RTMP 或 RTP"
                              InputScope="Url" />
+                    <StackPanel x:Name="ReconnectSettingsPanel" Spacing="10">
+                        <TextBlock Text="断流重连" Style="{StaticResource SubtitleTextBlockStyle}" />
+                        <NumberBox x:Name="RecordingStallBox" Header="断流检测（秒）" SpinButtonPlacementMode="Compact" />
+                        <NumberBox x:Name="RecordingRetryBox" Header="重试间隔（秒）" SpinButtonPlacementMode="Compact" />
+                        <NumberBox x:Name="RecordingWaitBox" Header="最长重连等待（分钟）" SpinButtonPlacementMode="Compact" />
+                    </StackPanel>
                     <StackPanel x:Name="WebSettings" Spacing="10" Visibility="Collapsed">
                         <TextBox x:Name="WebSourceBox" Header="网页视频链接" PlaceholderText="粘贴包含视频的网页地址"
                                  InputScope="Url" TextChanged="WebSource_TextChanged" />
@@ -54,33 +65,6 @@
                                   SelectionChanged="WebFormat_SelectionChanged" />
                         <TextBox x:Name="WebLinkBox" Header="直链" IsReadOnly="True" TextWrapping="Wrap"
                                  Height="60" PlaceholderText="所选格式的地址将在这里显示" />
-                    </StackPanel>
-                    <StackPanel Spacing="16">
-                        <Grid ColumnSpacing="8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBox x:Name="OutputBox" Header="保存到" PlaceholderText="输出文件夹" />
-                            <Button x:Name="OutputPickerButton" Grid.Column="1" Content="浏览…" VerticalAlignment="Bottom" Click="PickOutput_Click" />
-                        </Grid>
-                        <ComboBox x:Name="EncoderBox" Header="H.264 编码器" HorizontalAlignment="Stretch" SelectedIndex="0">
-                            <ComboBoxItem Content="软件 · x264" />
-                            <ComboBoxItem Content="Intel · Quick Sync" />
-                            <ComboBoxItem Content="NVIDIA · NVENC" />
-                            <ComboBoxItem Content="AMD · AMF" />
-                        </ComboBox>
-                        <ComboBox x:Name="DeinterlaceBox" Header="去隔行" HorizontalAlignment="Stretch" SelectedIndex="0"
-                                  ToolTipService.ToolTip="用于录制、转码和手动重新编码合并。画面仍有梳齿时可选强制。">
-                            <ComboBoxItem Content="自动（依据视频标记）" />
-                            <ComboBoxItem Content="强制去隔行" />
-                            <ComboBoxItem Content="关闭" />
-                        </ComboBox>
-                        <NumberBox x:Name="PartSizeBox" Header="录制分片大小（MB）" Value="1" Minimum="1" Maximum="1024"
-                                   SpinButtonPlacementMode="Compact" HorizontalAlignment="Stretch" />
-                        <CheckBox x:Name="ReencodeBox">
-                            <TextBlock Text="合并时使用所选编码器重新编码" TextWrapping="Wrap" />
-                        </CheckBox>
                     </StackPanel>
                 </StackPanel>
             </ScrollViewer>
@@ -155,7 +139,7 @@
                             <Slider x:Name="PreviewSeek" Grid.Column="1" VerticalAlignment="Center"
                                     Minimum="0" Maximum="1000" StepFrequency="1" IsThumbToolTipEnabled="False"
                                     IsEnabled="False" ValueChanged="PreviewSeek_Changed" AutomationProperties.Name="播放进度" />
-                            <TextBlock x:Name="PreviewTime" Grid.Column="2" Text="0:00:00 / --:--" FontSize="12"
+                            <TextBlock x:Name="PreviewTime" Grid.Column="2" Text="0:00:00" FontSize="12"
                                        Foreground="White" VerticalAlignment="Center" />
                         </Grid>
                     </Grid>
@@ -191,16 +175,22 @@
                                     </StackPanel>
                                 </Button>
                                 <Border Width="1" Margin="4,5" Background="{ThemeResource CardStrokeColorDefaultBrush}" />
-                                <Button x:Name="DownloadButton" Click="Download_Click" AutomationProperties.Name="下载视频">
+                                <Button x:Name="DownloadButton" Click="Download_Click" AutomationProperties.Name="下载媒体">
                                     <StackPanel Orientation="Horizontal" Spacing="6">
                                         <FontIcon Glyph="&#xE896;" FontSize="14" />
-                                        <TextBlock Text="下载视频" />
+                                        <TextBlock Text="下载媒体" />
                                     </StackPanel>
                                 </Button>
                                 <Button x:Name="RecordButton" Click="Record_Click" AutomationProperties.Name="录制直播">
                                     <StackPanel Orientation="Horizontal" Spacing="6">
                                         <FontIcon Glyph="&#xE7C8;" FontSize="14" />
                                         <TextBlock Text="录制直播" />
+                                    </StackPanel>
+                                </Button>
+                                <Button x:Name="OpenOutputButton" Click="OpenOutput_Click" AutomationProperties.Name="打开文件夹">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <FontIcon Glyph="&#xE838;" FontSize="14" />
+                                        <TextBlock Text="打开文件夹" />
                                     </StackPanel>
                                 </Button>
                             </StackPanel>
@@ -216,8 +206,7 @@
                                     <MenuFlyoutItem x:Name="SdpButton" Text="从 SDP 录制…" Click="RecordSdp_Click" />
                                     <MenuFlyoutSeparator />
                                     <MenuFlyoutItem x:Name="MergeButton" Text="合并录制分片…" Click="Merge_Click" />
-                                    <MenuFlyoutItem x:Name="TranscodeButton" Text="转码视频…" Click="Transcode_Click" />
-                                    <MenuFlyoutItem x:Name="OpenOutputButton" Text="打开文件夹" Click="OpenOutput_Click" />
+                                    <MenuFlyoutItem x:Name="TranscodeButton" Text="转码媒体…" Click="Transcode_Click" />
                                 </MenuFlyout>
                             </Button.Flyout>
                         </Button>

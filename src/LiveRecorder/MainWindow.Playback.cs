@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using LibVLCSharp.Platforms.Windows;
 using LibVLCSharp.Shared;
 using LiveRecorder.Core;
@@ -7,6 +6,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using LogLevel = LiveRecorder.Core.LogLevel;
 
 namespace LiveRecorder;
 
@@ -26,6 +26,7 @@ public sealed partial class MainWindow
     {
         public Uri? NetworkSource { get; } = networkSource;
         public WebVideoLink? WebFormat { get; } = webFormat;
+        public bool HasFixedDuration { get; set; } = networkSource is null && webFormat is null;
         public CancellationTokenSource Cancellation { get; } = new();
         public Task Startup { get; set; } = Task.CompletedTask;
         public Media? Media { get; set; }
@@ -34,6 +35,7 @@ public sealed partial class MainWindow
         public PreviewStream? Producer { get; private set; }
         public bool Opened { get; set; }
         public Func<Task>? Replay { get; set; }
+        public Func<Task>? Fallback { get; set; }
 
         public Media FromStream(LibVLC vlc, PreviewStream producer, params string[] options)
         {
@@ -70,7 +72,8 @@ public sealed partial class MainWindow
             if (_preview is null)
                 PreviewMessage.Text = ex.Message;
             else
-                SetStatus("无法打开预览链接", ex.Message);
+                SetStatus("无法打开预览链接", ex.Message, LogLevel.Warning);
+            PortableStorage.Log.Write(LogLevel.Debug, "Playback", "预览地址校验失败。", ex);
             return;
         }
 
@@ -86,7 +89,14 @@ public sealed partial class MainWindow
         }, SelectedWebFormat);
     }
 
-    private Task PreviewWebAudioAsync(WebVideoLink audio) => OpenPreviewAsync(audio.Label, null, (vlc, session) =>
+    private Task PreviewWebAudioAsync(WebVideoLink audio)
+    {
+        var source = new Uri(audio.Url);
+        return OpenPreviewAsync(audio.Label, source, (vlc, _) => new Media(vlc, source), audio,
+            () => PlayAudioStreamAsync(audio));
+    }
+
+    private Task PlayAudioStreamAsync(WebVideoLink audio) => OpenPreviewAsync(audio.Label, null, (vlc, session) =>
     {
         PreviewMessage.Text = "正在缓冲音频…";
         return session.FromStream(vlc, _webAnalyzer.OpenAudioPreview(audio, _ffmpegPath, session.Cancellation.Token));
@@ -112,7 +122,7 @@ public sealed partial class MainWindow
     });
 
     private async Task OpenPreviewAsync(string title, Uri? networkSource, Func<LibVLC, PreviewSession, Media> loadMedia,
-        WebVideoLink? format = null)
+        WebVideoLink? format = null, Func<Task>? fallback = null)
     {
         if (_closeWhenIdle)
             return;
@@ -120,9 +130,12 @@ public sealed partial class MainWindow
         Task previous = StopPreviewAsync();
         var session = new PreviewSession(networkSource, format)
         {
-            Replay = () => OpenPreviewAsync(title, networkSource, loadMedia, format)
+            Replay = () => OpenPreviewAsync(title, networkSource, loadMedia, format, fallback),
+            Fallback = fallback
         };
         _preview = session;
+        string source = format is not null ? "yt-dlp" : networkSource?.Scheme ?? "本地文件";
+        PortableStorage.Log.Write(LogLevel.Information, "Playback", $"正在打开预览。来源 {source}。");
         PreviewName.Text = title;
         PreviewMessage.Text = "正在打开媒体…";
         StopPreviewButton.Visibility = Visibility.Visible;
@@ -144,6 +157,7 @@ public sealed partial class MainWindow
             _vlc ??= new LibVLC([.. display, "--ignore-config", "--no-plugins-cache", "--no-video-title-show"]);
             PreviewPlayer.Clear();
             Media media = session.Media = loadMedia(_vlc, session);
+            PortableStorage.Log.Write(LogLevel.Debug, "Playback", session.Producer is null ? "使用 VLC 直接读取媒体。" : "使用管道为 VLC 提供媒体。");
             var player = new MediaPlayer(_vlc);
             session.Player = player;
             player.Playing += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewPlaying(session, player));
@@ -153,8 +167,16 @@ public sealed partial class MainWindow
                 throw new InvalidOperationException("VLC 无法开始播放此媒体。");
             if (session.Producer is { } producer)
                 _ = ObserveStreamAsync(session, producer.Completion);
+            else if (networkSource is not null && format?.IsLive != true)
+                _ = CheckPreviewDurationAsync(session, networkSource, token);
             _ = WatchPreviewStartupAsync(session, token);
         }
+    }
+
+    private async Task CheckPreviewDurationAsync(PreviewSession session, Uri source, CancellationToken token)
+    {
+        if (await MediaService.HasFixedPreviewDurationAsync(source, token) && _preview == session)
+            session.HasFixedDuration = true;
     }
 
     private void PreviewPlaying(PreviewSession session, MediaPlayer player)
@@ -164,6 +186,7 @@ public sealed partial class MainWindow
         if (!session.Opened)
         {
             session.Opened = true;
+            PortableStorage.Log.Write(LogLevel.Information, "Playback", "预览开始播放。");
             PreviewPlaceholder.Visibility = Visibility.Collapsed;
             PreviewTransport.Visibility = Visibility.Visible;
             SetPreviewVolume(player);
@@ -192,26 +215,11 @@ public sealed partial class MainWindow
         PreviewPlayGlyph.Glyph = playing ? "\uE769" : "\uE768";
         AutomationProperties.SetName(PreviewPlay, playing ? "暂停" : "播放");
         long elapsed = Math.Max(0, player.Time);
-        long duration = session.WebFormat?.IsLive == true ? 0 : player.Length;
+        long duration = session.HasFixedDuration ? player.Length : 0;
         PreviewSeek.IsEnabled = player.IsSeekable && duration > 0;
-        PreviewTime.Text = $"{FormatTime(elapsed)} / {(duration > 0 ? FormatTime(duration) : "--:--")}";
+        PreviewTime.Text = duration > 0 ? $"{FormatTime(elapsed)} / {FormatTime(duration)}" : FormatTime(elapsed);
         if (!_draggingSeek)
             SetSeekPosition(duration > 0 ? elapsed * PreviewSeek.Maximum / duration : 0);
-        if (session.NetworkSource is { } source)
-        {
-            var current = (Source: source, Format: session.WebFormat);
-            int videoTracks = player.VideoTrackCount;
-            if (videoTracks > 0 && _detectedAudio == current)
-            {
-                _detectedAudio = null;
-                UpdateRecordButton();
-            }
-            else if (videoTracks == 0 && _detectedAudio != current && player.AudioTrackCount > 0)
-            {
-                _detectedAudio = current;
-                UpdateRecordButton();
-            }
-        }
     }
 
     private static string FormatTime(long milliseconds)
@@ -297,6 +305,14 @@ public sealed partial class MainWindow
     {
         if (_preview != session)
             return;
+        if (!session.Opened && session.Fallback is { } fallback)
+        {
+            PortableStorage.Log.Write(LogLevel.Warning, "Playback", "音频直放失败，切换到备用媒体管道。");
+            session.Fallback = null;
+            await fallback();
+            return;
+        }
+        PortableStorage.Log.Write(LogLevel.Error, "Playback", string.IsNullOrWhiteSpace(message) ? "VLC 无法播放此媒体。" : message);
         Task cleanup = StopPreviewAsync();
         PreviewMessage.Text = string.IsNullOrWhiteSpace(message) ? "VLC 无法播放此媒体。" : $"无法播放此媒体。{Environment.NewLine}{message}";
         await cleanup;
@@ -313,12 +329,13 @@ public sealed partial class MainWindow
         if (_preview is not { } session)
             return _previewCleanup;
         _preview = null;
+        PortableStorage.Log.Write(LogLevel.Debug, "Playback", "正在关闭预览。");
         _previewClock?.Stop();
         _draggingSeek = false;
         PreviewTransport.Visibility = Visibility.Collapsed;
         PreviewSeek.IsEnabled = false;
         SetSeekPosition(0);
-        PreviewTime.Text = "0:00:00 / --:--";
+        PreviewTime.Text = "0:00:00";
         PreviewPlaceholder.Visibility = Visibility.Visible;
         PreviewMessage.Text = PreviewIdleMessage;
         PreviewName.Text = "";
@@ -333,7 +350,7 @@ public sealed partial class MainWindow
         {
             // Cancel the producer first so VLC can exit a blocking read from the audio pipe.
             try { await session.Cancellation.CancelAsync(); }
-            catch (Exception ex) { Debug.WriteLine(ex); }
+            catch (Exception ex) { PortableStorage.Log.Write(LogLevel.Warning, "Playback", "无法取消预览输入。", ex); }
             try { await session.Startup; }
             catch (Exception) { /* The preview request reports startup errors. */ }
             if (session.Player is { } player)
@@ -346,7 +363,7 @@ public sealed partial class MainWindow
                 }
             }
         }
-        catch (Exception ex) { Debug.WriteLine(ex); }
+        catch (Exception ex) { PortableStorage.Log.Write(LogLevel.Warning, "Playback", "无法完整清理预览。", ex); }
         finally
         {
             session.Media?.Dispose();

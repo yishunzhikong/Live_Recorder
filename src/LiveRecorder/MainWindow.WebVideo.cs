@@ -11,7 +11,6 @@ public sealed partial class MainWindow
 
     private WebVideoAnalyzer _webAnalyzer;
     private AppMode _mode;
-    private (Uri Source, WebVideoLink? Format)? _detectedAudio;
     private readonly (string Title, string Detail)[] _modeStatus =
     [
         ("就绪", "粘贴媒体链接，或选择要处理的本地文件。"),
@@ -26,10 +25,10 @@ public sealed partial class MainWindow
         _modeStatus[(int)_mode] = (StatusTitle.Text, StatusDetail.Text);
         _mode = (AppMode)ModeBox.SelectedIndex;
         SourceBox.Visibility = _mode == AppMode.Live ? Visibility.Visible : Visibility.Collapsed;
+        ReconnectSettingsPanel.Visibility = SourceBox.Visibility;
         WebSettings.Visibility = _mode == AppMode.WebVideo ? Visibility.Visible : Visibility.Collapsed;
-        UpdateRecordButton();
         var status = _modeStatus[(int)_mode];
-        SetStatus(status.Title, status.Detail);
+        SetStatus(status.Title, status.Detail, LogLevel.Debug);
 
         Task stopped = StopPreviewAsync();
         PreviewMessage.Text = PreviewIdleMessage;
@@ -48,19 +47,6 @@ public sealed partial class MainWindow
 
     private WebVideoLink? SelectedWebAudio => SelectedWebFormat is { AudioOnly: true } audio ? audio : null;
 
-    private void UpdateRecordButton()
-    {
-        if (RecordButton is null)
-            return;
-
-        WebVideoLink? format = SelectedWebFormat;
-        string? address = _mode == AppMode.Live ? SourceBox.Text : format?.Url;
-        bool audioOnly = format?.AudioOnly == true ||
-            (_detectedAudio is { } detected && detected.Format == format &&
-                Uri.TryCreate(address?.Trim(), UriKind.Absolute, out Uri? source) && detected.Source.Equals(source));
-        RecordButton.Visibility = audioOnly ? Visibility.Collapsed : Visibility.Visible;
-    }
-
     private async Task<string> DownloadWebAudioAsync(WebVideoLink audio, string directory, CancellationToken token)
     {
         DirectoryInfo work = Directory.CreateDirectory(Path.Combine(PortableStorage.CacheDirectory, $"audio-{Guid.NewGuid():N}"));
@@ -77,8 +63,10 @@ public sealed partial class MainWindow
     private static void DeleteWebAudioFiles(DirectoryInfo folder)
     {
         try { folder.Delete(recursive: true); }
-        catch (IOException ex) { System.Diagnostics.Debug.WriteLine(ex); }
-        catch (UnauthorizedAccessException ex) { System.Diagnostics.Debug.WriteLine(ex); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            PortableStorage.Log.Write(LogLevel.Warning, "Download", "无法清理音频缓存。", ex);
+        }
     }
 
     private string PreviewIdleMessage => _mode == AppMode.WebVideo
@@ -125,7 +113,6 @@ public sealed partial class MainWindow
     {
         WebFormatBox.IsEnabled = enabled && WebFormatBox.Items.Count > 0;
         CopyWebLinkButton.IsEnabled = enabled && WebFormatBox.SelectedItem is WebVideoLink;
-        UpdateRecordButton();
     }
 
     private void CopyWebLink_Click(object sender, RoutedEventArgs e)
@@ -139,6 +126,6 @@ public sealed partial class MainWindow
             Clipboard.SetContent(data);
             SetStatus("已复制直链", "可粘贴到其他播放器或下载工具。");
         }
-        catch (Exception ex) { SetStatus("无法复制直链", ex.Message); }
+        catch (Exception ex) { SetStatus("无法复制直链", ex.Message, LogLevel.Error, ex); }
     }
 }

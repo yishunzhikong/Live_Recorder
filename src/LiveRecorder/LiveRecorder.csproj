@@ -28,4 +28,13 @@
     <ProjectReference Include="../LiveRecorder.Core/LiveRecorder.Core.csproj" />
     <None Include="../../icon/icon.ico" Link="Assets/icon.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- WinUI copies compiled XAML to bin but can omit these files from an unpackaged publish. -->
+  <Target Name="PublishCompiledXaml" BeforeTargets="GetCopyToPublishDirectoryItems"
+          DependsOnTargets="AddProcessedXamlFilesToCopyLocal" Condition="'$(WindowsPackageType)' == 'None'">
+    <ItemGroup>
+      <ContentWithTargetPath Include="@(_ProcessedXamlFilesToCopyLocalWithTargetPath)"
+                             Condition="'%(_ProcessedXamlFilesToCopyLocalWithTargetPath.Extension)' == '.xbf'"
+                             CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
 </Project>
