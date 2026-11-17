@@ -175,6 +175,9 @@ public sealed partial class MainWindow
             var player = new MediaPlayer(_vlc);
             session.Player = player;
             player.Playing += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewPlaying(session, player));
+            player.Paused += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewInactive(session, player));
+            player.EndReached += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewInactive(session, player, ended: true));
+            player.Stopped += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewInactive(session, player));
             player.EncounteredError += (_, _) => DispatcherQueue.TryEnqueue(() => _ = PreviewFailedAsync(session, ""));
             PreviewPlayer.MediaPlayer = player;
             if (!player.Play(media))
@@ -190,7 +193,11 @@ public sealed partial class MainWindow
     private async Task CheckPreviewDurationAsync(PreviewSession session, Uri source, CancellationToken token)
     {
         if (await MediaService.HasFixedPreviewDurationAsync(source, token, session.WebFormat?.Headers) && _preview == session)
+        {
             session.HasFixedDuration = true;
+            if (session is { Opened: true, Player: { } player } && player.State is not (VLCState.Ended or VLCState.Stopped))
+                RefreshPreviewTimeline(session, player);
+        }
     }
 
     private void PreviewPlaying(PreviewSession session, MediaPlayer player)
@@ -204,10 +211,30 @@ public sealed partial class MainWindow
             PreviewPlaceholder.Visibility = Visibility.Collapsed;
             PreviewTransport.Visibility = Visibility.Visible;
             SetPreviewVolume(player);
-            _previewClock ??= CreatePreviewClock();
-            _previewClock.Start();
         }
-        RefreshPreviewControls(session, player);
+        _previewClock ??= CreatePreviewClock();
+        _previewClock.Start();
+        SetPreviewPlayButton(true);
+        RefreshPreviewTimeline(session, player);
+    }
+
+    private void PreviewInactive(PreviewSession session, MediaPlayer player, bool ended = false)
+    {
+        if (_preview != session || (!ended && player.IsPlaying))
+            return;
+        _previewClock?.Stop();
+        SetPreviewPlayButton(false);
+        if (ended && session.HasFixedDuration && player.Length > 0)
+        {
+            PreviewTime.Text = $"{FormatTime(player.Length)} / {FormatTime(player.Length)}";
+            SetSeekPosition(PreviewSeek.Maximum);
+        }
+        else if (player.State == VLCState.Paused)
+        {
+            RefreshPreviewTimeline(session, player);
+        }
+        if (player.State != VLCState.Paused)
+            PreviewSeek.IsEnabled = false;
     }
 
     private DispatcherQueueTimer CreatePreviewClock()
@@ -218,20 +245,28 @@ public sealed partial class MainWindow
         timer.Tick += (_, _) =>
         {
             if (_preview is { Player: { } player } session)
-                RefreshPreviewControls(session, player);
+                RefreshPreviewTimeline(session, player);
         };
         return timer;
     }
 
-    private void RefreshPreviewControls(PreviewSession session, MediaPlayer player)
+    private void SetPreviewPlayButton(bool playing)
     {
-        bool playing = player.IsPlaying;
-        PreviewPlayGlyph.Glyph = playing ? "\uE769" : "\uE768";
+        string glyph = playing ? "\uE769" : "\uE768";
+        if (PreviewPlayGlyph.Glyph == glyph)
+            return;
+        PreviewPlayGlyph.Glyph = glyph;
         AutomationProperties.SetName(PreviewPlay, playing ? "暂停" : "播放");
+    }
+
+    private void RefreshPreviewTimeline(PreviewSession session, MediaPlayer player)
+    {
         long elapsed = Math.Max(0, player.Time);
         long duration = session.HasFixedDuration ? player.Length : 0;
         PreviewSeek.IsEnabled = player.IsSeekable && duration > 0;
-        PreviewTime.Text = duration > 0 ? $"{FormatTime(elapsed)} / {FormatTime(duration)}" : FormatTime(elapsed);
+        string time = duration > 0 ? $"{FormatTime(elapsed)} / {FormatTime(duration)}" : FormatTime(elapsed);
+        if (time != PreviewTime.Text)
+            PreviewTime.Text = time;
         if (!_draggingSeek)
             SetSeekPosition(duration > 0 ? elapsed * PreviewSeek.Maximum / duration : 0);
     }
@@ -252,7 +287,12 @@ public sealed partial class MainWindow
     private void PreviewSeek_Changed(object sender, RangeBaseValueChangedEventArgs e)
     {
         if (!_updatingSeek && PreviewSeek.IsEnabled && _preview?.Player is { IsSeekable: true } player)
-            player.Position = (float)(e.NewValue / PreviewSeek.Maximum);
+        {
+            double position = e.NewValue / PreviewSeek.Maximum;
+            player.Position = (float)position;
+            if (player.State == VLCState.Paused && player.Length > 0)
+                PreviewTime.Text = $"{FormatTime((long)(player.Length * position))} / {FormatTime(player.Length)}";
+        }
     }
 
     private async void PreviewPlay_Click(object sender, RoutedEventArgs e)
@@ -347,6 +387,7 @@ public sealed partial class MainWindow
         _previewClock?.Stop();
         _draggingSeek = false;
         PreviewTransport.Visibility = Visibility.Collapsed;
+        SetPreviewPlayButton(false);
         PreviewSeek.IsEnabled = false;
         SetSeekPosition(0);
         PreviewTime.Text = "0:00:00";
@@ -372,19 +413,29 @@ public sealed partial class MainWindow
                 try { await Task.Run(player.Stop); }
                 finally
                 {
-                    PreviewPlayer.MediaPlayer = null;
-                    player.Dispose();
+                    try { PreviewPlayer.MediaPlayer = null; }
+                    finally { DisposePreviewResource(player); }
                 }
             }
         }
         catch (Exception ex) { PortableStorage.Log.Write(LogLevel.Warning, "Playback", "无法完整清理预览。", ex); }
         finally
         {
-            session.Media?.Dispose();
-            session.Input?.Dispose();
-            if (session.Producer is { } producer)
-                await producer.DisposeAsync();
-            session.Cancellation.Dispose();
+            DisposePreviewResource(session.Media);
+            DisposePreviewResource(session.Input);
+            try
+            {
+                if (session.Producer is { } producer)
+                    await producer.DisposeAsync();
+            }
+            catch (Exception ex) { PortableStorage.Log.Write(LogLevel.Warning, "Playback", "无法清理预览输入进程。", ex); }
+            finally { DisposePreviewResource(session.Cancellation); }
         }
+    }
+
+    private static void DisposePreviewResource(IDisposable? resource)
+    {
+        try { resource?.Dispose(); }
+        catch (Exception ex) { PortableStorage.Log.Write(LogLevel.Warning, "Playback", "无法释放预览资源。", ex); }
     }
 }
