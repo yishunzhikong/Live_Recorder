@@ -13,6 +13,8 @@ public sealed partial class MainWindow : Window
     // 窗口编号在进程内递增，与 PID 组合后可区分同一日志目录中的事件。
     private readonly int _logWindowId = Interlocked.Increment(ref _nextLogWindowId);
     private readonly nint _handle;
+    private readonly WindowPlacement _placement;
+    private ContentDialog? _activeDialog;
     private bool _closeWhenIdle;
     private bool _closingAfterCleanup;
 
@@ -20,8 +22,10 @@ public sealed partial class MainWindow : Window
     {
         (_webAnalyzer, _ffmpegPath) = ResolveMediaTools();
         InitializeComponent();
+        MainLayout.Width = WindowPlacement.LayoutWidth;
+        MainLayout.Height = WindowPlacement.LayoutHeight;
         _handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
-        MediaPane.Attach(AppWindow.Id, _handle, _logWindowId, PortableStorage.DefaultOutputDirectory());
+        MediaPane.Attach(AppWindow.Id, _handle, _logWindowId, _defaultOutput, ShowDialogAsync);
         MediaPane.SetTools(_ffmpegPath, _webAnalyzer);
         MediaPane.VisibleHeightChanged += height => SettingsCard.Height = height;
         MediaPane.BusyChanged += (_, _) =>
@@ -47,9 +51,35 @@ public sealed partial class MainWindow : Window
         };
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
-        WindowPlacement.Apply(AppWindow, _handle);
+        _placement = new WindowPlacement(AppWindow, _handle);
+        if (!_placement.IsResizeConstrained)
+            WriteWindowLog(LogLevel.Warning, "Window", "无法启用边框比例缩放，内容仍按原比例显示。");
         AppWindow.Closing += Window_Closing;
         WriteWindowLog(LogLevel.Information, "Window", "窗口已打开。");
+    }
+
+    /// <summary>在主布局中显示应用对话框，使其跟随窗口等比例缩放。</summary>
+    /// <param name="dialog">需要显示的应用对话框。</param>
+    /// <returns>用户选择的对话框结果。</returns>
+    private async Task<ContentDialogResult> ShowDialogAsync(ContentDialog dialog)
+    {
+        // 设置、工具管理和录制结果共享一个对话框层及关闭流程。
+        if (_closeWhenIdle || _activeDialog is not null)
+            return ContentDialogResult.None;
+
+        dialog.XamlRoot = DialogLayer.XamlRoot;
+        _activeDialog = dialog;
+        try
+        {
+            DialogLayer.Children.Add(dialog);
+            return await dialog.ShowAsync(ContentDialogPlacement.InPlace);
+        }
+        finally
+        {
+            DialogLayer.Children.Remove(dialog);
+            _activeDialog = null;
+            CloseWhenReady();
+        }
     }
 
     private async Task<string?> PickFolderAsync()
@@ -61,21 +91,24 @@ public sealed partial class MainWindow : Window
     // 有活动任务时延后关窗，等待录制分片、对话框和预览资源清理。
     private async void Window_Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
-        if (_toolVersionsDialog is null && !MediaPane.HasActivity)
+        if (_activeDialog is null && !MediaPane.HasActivity)
             return;
         args.Cancel = true;
         if (_closeWhenIdle)
             return;
         _closeWhenIdle = true;
         Task previewCleanup = MediaPane.BeginCloseAsync();
-        _toolVersionsDialog?.CancelAndClose();
+        if (_activeDialog is ToolVersionsDialog tools)
+            tools.CancelAndClose();
+        else
+            _activeDialog?.Hide();
         await previewCleanup;
         CloseWhenReady();
     }
 
     private void CloseWhenReady()
     {
-        if (!_closeWhenIdle || _closingAfterCleanup || MediaPane.HasActivity || _toolVersionsDialog is not null)
+        if (!_closeWhenIdle || _closingAfterCleanup || MediaPane.HasActivity || _activeDialog is not null)
             return;
         _closingAfterCleanup = true;
         Close();

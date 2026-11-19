@@ -16,14 +16,14 @@ namespace LiveRecorder.Core;
 public sealed record RecordingMediaProgress(long Attempt, string Container, string? Video = null, string? Audio = null,
     long? VideoBytes = null, long? AudioBytes = null, bool VideoReencoded = false, bool AudioReencoded = false);
 
-/// <summary>解析录制进程的输出轨道和封装前包大小，将变化限频后报告给界面。</summary>
+/// <summary>解析录制轨道及包大小，随 FFmpeg 的媒体时间一起发布累计字节。</summary>
 internal sealed partial class RecordingStatistics(string extension, IProgress<MediaProgress> progress, bool videoReencoded, bool audioReencoded)
+    : IProgress<MediaProgress>
 {
     private RecordingMediaProgress _current = new(Stopwatch.GetTimestamp(),
         extension == RecordingParts.MatroskaExtension ? "MKV" : "TS",
         VideoReencoded: videoReencoded, AudioReencoded: audioReencoded);
     private bool _output;
-    private long _lastReport = Stopwatch.GetTimestamp();
     private long? _videoBytes;
     private long? _audioBytes;
 
@@ -48,7 +48,6 @@ internal sealed partial class RecordingStatistics(string extension, IProgress<Me
             string? fps = video ? MatchValue(FrameRate(), line) : null;
             string description = string.Join(" · ", new[] { codec, format, fps }.OfType<string>());
             _current = video ? _current with { Video = description } : _current with { Audio = description };
-            Report();
             return;
         }
 
@@ -69,18 +68,12 @@ internal sealed partial class RecordingStatistics(string extension, IProgress<Me
             _videoBytes = (_videoBytes ?? 0) + bytes;
         else if (line.StartsWith("[aost#", StringComparison.Ordinal) || packet.StartsWith("type:audio", StringComparison.Ordinal))
             _audioBytes = (_audioBytes ?? 0) + bytes;
-        else
-            return;
-
-        if (Stopwatch.GetElapsedTime(_lastReport) >= TimeSpan.FromMilliseconds(200))
-            Report();
     }
 
-    private void Report()
-    {
-        _lastReport = Stopwatch.GetTimestamp();
-        progress.Report(new MediaProgress(Recording: _current with { VideoBytes = _videoBytes, AudioBytes = _audioBytes }));
-    }
+    // 媒体时间和包诊断来自同一条 stderr 管道。每次进度都带上已读取的全部包字节，
+    // 即使一个 HLS 分片的包在两个进度报告之间集中到达，也会计入下次读数。
+    void IProgress<MediaProgress>.Report(MediaProgress value) =>
+        progress.Report(value with { Recording = _current with { VideoBytes = _videoBytes, AudioBytes = _audioBytes } });
 
     private static string? MatchValue(Regex field, string line)
     {

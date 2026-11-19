@@ -9,7 +9,6 @@ public sealed partial class MainWindow
     private readonly ToolUpdater _toolUpdater = new(PortableStorage.ToolsDirectory, PortableStorage.CacheDirectory,
         configuration: PortableStorage.Configuration);
     private string? _ffmpegPath;
-    private ToolVersionsDialog? _toolVersionsDialog;
 
     /// <summary>使用同一份安装快照刷新指定媒体服务。</summary>
     /// <param name="tool">需要重新绑定的工具。</param>
@@ -40,19 +39,9 @@ public sealed partial class MainWindow
 
     private async void ManageToolVersions_Click(object sender, RoutedEventArgs e) => await MediaPane.HandlePickerAsync(async () =>
     {
-        if (MediaPane.IsBusy || _toolVersionsDialog is not null || _closeWhenIdle)
+        if (MediaPane.IsBusy || _activeDialog is not null || _closeWhenIdle)
             return;
-        var dialog = new ToolVersionsDialog(_toolUpdater, ReloadMediaTool, MediaPane.StopPreviewAsync, _logWindowId)
-        {
-            XamlRoot = ((FrameworkElement)Content).XamlRoot
-        };
-        _toolVersionsDialog = dialog;
-        try { await dialog.ShowAsync(); }
-        finally
-        {
-            _toolVersionsDialog = null;
-            CloseWhenReady();
-        }
+        await ShowDialogAsync(new ToolVersionsDialog(_toolUpdater, ReloadMediaTool, MediaPane.StopPreviewAsync, _logWindowId));
     });
 
     private Task UpgradeToolAsync(MediaTool tool, string name) => MediaPane.RunAsync($"正在检查 {name}", async token =>

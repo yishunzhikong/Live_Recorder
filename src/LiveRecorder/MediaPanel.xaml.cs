@@ -28,11 +28,12 @@ public sealed partial class MediaPanel : UserControl
     private WindowId _windowId;
     private nint _handle;
     private int _logWindowId;
+    private Func<ContentDialog, Task<ContentDialogResult>> _showDialogAsync = null!;
     private string _defaultOutput = "";
     private CancellationTokenSource? _operation;
-    private ContentDialog? _mergePrompt;
     private string? _lastResultFolder;
     private DispatcherQueueTimer? _progressTimer;
+    private bool _waitingForRecordingReconnect;
     private bool _closeWhenIdle;
 
     public MediaPanel()
@@ -62,12 +63,15 @@ public sealed partial class MediaPanel : UserControl
     /// <param name="handle">供原生选择器使用的 HWND。</param>
     /// <param name="logWindowId">日志中的窗口编号。</param>
     /// <param name="defaultOutput">未自定义时使用的输出目录。</param>
-    internal void Attach(WindowId windowId, nint handle, int logWindowId, string defaultOutput)
+    /// <param name="showDialogAsync">按宿主窗口布局显示对话框的回调。</param>
+    internal void Attach(WindowId windowId, nint handle, int logWindowId, string defaultOutput,
+        Func<ContentDialog, Task<ContentDialogResult>> showDialogAsync)
     {
         _windowId = windowId;
         _handle = handle;
         _logWindowId = logWindowId;
         _defaultOutput = defaultOutput;
+        _showDialogAsync = showDialogAsync;
     }
 
     /// <summary>更新媒体操作使用的工具版本。</summary>
@@ -131,7 +135,6 @@ public sealed partial class MediaPanel : UserControl
     internal Task BeginCloseAsync()
     {
         _closeWhenIdle = true;
-        _mergePrompt?.Hide();
         RequestStop();
         return StopPreviewAsync();
     }
@@ -265,7 +268,10 @@ public sealed partial class MediaPanel : UserControl
         string detail = $"{update.Time:yyyy-MM-dd HH:mm:ss zzz} · {update.Detail}";
         LogLevel level = update.Recovered ? LogLevel.Information : LogLevel.Warning;
         if (_operation?.Token == token && !token.IsCancellationRequested)
+        {
+            _waitingForRecordingReconnect = !update.Recovered;
             SetStatus(title, detail, level);
+        }
         else
             WriteWindowLog(level, "Recording", $"{title} · {detail}");
     });
@@ -289,9 +295,8 @@ public sealed partial class MediaPanel : UserControl
         if (_closeWhenIdle)
             return;
 
-        _mergePrompt = new ContentDialog
+        var mergePrompt = new ContentDialog
         {
-            XamlRoot = XamlRoot,
             Title = "合并录制分片？",
             Content = new ScrollViewer
             {
@@ -310,9 +315,7 @@ public sealed partial class MediaPanel : UserControl
             CloseButtonText = "保留分片",
             DefaultButton = ContentDialogButton.Primary
         };
-        ContentDialogResult choice;
-        try { choice = await _mergePrompt.ShowAsync(); }
-        finally { _mergePrompt = null; }
+        ContentDialogResult choice = await _showDialogAsync(mergePrompt);
         if (choice == ContentDialogResult.None || _closeWhenIdle)
             return;
 
@@ -417,16 +420,25 @@ public sealed partial class MediaPanel : UserControl
         string? time = null;
         RecordingMediaProgress? recording = null;
         long? writtenBytes = null;
-        var writeRate = new RecordingRateWindow();
-        var videoRate = new RecordingRateWindow();
-        var audioRate = new RecordingRateWindow();
+        TimeSpan mediaTime = TimeSpan.Zero;
+        var writeRate = new AverageRecordingRate();
+        var videoRate = new RealtimeTrackRate();
+        var audioRate = new RealtimeTrackRate();
         timer.Tick += (_, _) =>
         {
             if (_progressTimer != timer || _operation?.IsCancellationRequested != false)
                 return;
             if (updates.Take() is { } progress)
                 UpdateTaskProgress(progress);
-            if (recording is { } media && (media.Video is not null || media.Audio is not null))
+            if (_waitingForRecordingReconnect)
+            {
+                ClearRates();
+                RecordingInfo.Visibility = Visibility.Visible;
+                SetRecordingText(RecordingWriteInfo, "正在重连");
+                SetRecordingText(RecordingVideoInfo, null);
+                SetRecordingText(RecordingAudioInfo, null);
+            }
+            else if (recording is { } media && (media.Video is not null || media.Audio is not null))
             {
                 long now = Stopwatch.GetTimestamp();
                 RecordingInfo.Visibility = Visibility.Visible;
@@ -437,7 +449,7 @@ public sealed partial class MediaPanel : UserControl
                     (false, true) => "转码录制（音频）",
                     _ => "原码录制"
                 };
-                SetRecordingText(RecordingWriteInfo, $"{mode}  ·  分片 {media.Container}  ·  实时写入 {writeRate.Sample(now, writtenBytes)}");
+                SetRecordingText(RecordingWriteInfo, $"{mode}  ·  分片 {media.Container}  ·  平均封装码率 {writeRate.Sample(mediaTime, writtenBytes)}");
                 SetRecordingText(RecordingVideoInfo, FormatTrack("视频", media.Video, videoRate.Sample(now, media.VideoBytes)));
                 SetRecordingText(RecordingAudioInfo, FormatTrack("音频", media.Audio, audioRate.Sample(now, media.AudioBytes)));
             }
@@ -455,9 +467,8 @@ public sealed partial class MediaPanel : UserControl
                 if (recording?.Attempt != media.Attempt)
                 {
                     writtenBytes = null;
-                    writeRate.Clear();
-                    videoRate.Clear();
-                    audioRate.Clear();
+                    mediaTime = TimeSpan.Zero;
+                    ClearRates();
                 }
                 recording = media;
             }
@@ -477,15 +488,25 @@ public sealed partial class MediaPanel : UserControl
             if (progress.Parts is int count)
                 parts = $"已保存 {count} 片";
             if (progress.MediaTime is TimeSpan duration)
+            {
+                mediaTime = duration;
                 time = $"媒体时长 {(int)duration.TotalHours:D2}:{duration.Minutes:D2}:{duration.Seconds:D2}";
+            }
             string detail = string.Join("  ·  ", new[] { time, parts, size }.OfType<string>());
-            if (StatusDetail.Text != detail)
+            if (!_waitingForRecordingReconnect && StatusDetail.Text != detail)
                 StatusDetail.Text = detail;
+        }
+
+        void ClearRates()
+        {
+            writeRate.Clear();
+            videoRate.Clear();
+            audioRate.Clear();
         }
     }
 
     private static string? FormatTrack(string name, string? description, string rate) =>
-        description is null ? null : $"{name}  {description}  ·  实时 {rate}";
+        description is null ? null : $"{name}  {description}  ·  实时码率 {rate}";
 
     private static void SetRecordingText(TextBlock target, string? text)
     {
@@ -496,8 +517,39 @@ public sealed partial class MediaPanel : UserControl
             target.Text = text;
     }
 
-    /// <summary>使用近三秒的累计字节差计算写入速率，降低分片集中到达时的读数波动。</summary>
-    private sealed class RecordingRateWindow
+    /// <summary>按最近约 30 秒媒体时长计算平均码率。等待新数据时保留上次读数。</summary>
+    private sealed class AverageRecordingRate
+    {
+        private readonly Queue<(TimeSpan At, long Bytes)> _samples = new();
+        private (TimeSpan At, long Bytes) _last;
+        private string _rate = "—";
+
+        public void Clear()
+        {
+            _samples.Clear();
+            _last = default;
+            _rate = "—";
+        }
+
+        public string Sample(TimeSpan mediaTime, long? total)
+        {
+            if (total is not long bytes || bytes <= _last.Bytes || mediaTime - _last.At < TimeSpan.FromSeconds(1))
+                return _rate;
+            if (_samples.Count == 0)
+                _samples.Enqueue(default);
+            _last = (mediaTime, bytes);
+            _samples.Enqueue(_last);
+            while (_samples.Count > 2 && mediaTime - _samples.Peek().At > TimeSpan.FromSeconds(30))
+                _samples.Dequeue();
+
+            var baseline = _samples.Peek();
+            _rate = FormatBitrate(bytes - baseline.Bytes, (mediaTime - baseline.At).TotalSeconds);
+            return _rate;
+        }
+    }
+
+    /// <summary>按最近约 3 秒实际经过的时间计算分轨实时码率，反映录制端收到的包速率。</summary>
+    private sealed class RealtimeTrackRate
     {
         private readonly Queue<(long At, long Bytes)> _samples = new();
 
@@ -509,22 +561,25 @@ public sealed partial class MediaPanel : UserControl
                 return "—";
             while (_samples.TryPeek(out var old) && Stopwatch.GetElapsedTime(old.At, now) > TimeSpan.FromSeconds(3))
                 _samples.Dequeue();
-            if (_samples.TryPeek(out var first) && bytes < first.Bytes)
-                _samples.Clear();
             _samples.Enqueue((now, bytes));
+
             var baseline = _samples.Peek();
             double seconds = Stopwatch.GetElapsedTime(baseline.At, now).TotalSeconds;
-            if (seconds < 1)
-                return "—";
-            double kbps = (bytes - baseline.Bytes) * 8d / seconds / 1000d;
-            return kbps >= 1000 ? $"{kbps / 1000:0.00} Mb/s" : $"{kbps:0} kb/s";
+            return seconds < 1 ? "—" : FormatBitrate(bytes - baseline.Bytes, seconds);
         }
+    }
+
+    private static string FormatBitrate(long bytes, double seconds)
+    {
+        double kbps = bytes * 8d / seconds / 1000d;
+        return kbps >= 1000 ? $"{kbps / 1000:0.00} Mb/s" : $"{kbps:0} kb/s";
     }
 
     private void StopProgressUpdates()
     {
         _progressTimer?.Stop();
         _progressTimer = null;
+        _waitingForRecordingReconnect = false;
         RecordingInfo.Visibility = Visibility.Collapsed;
     }
 
