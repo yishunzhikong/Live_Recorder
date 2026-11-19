@@ -145,9 +145,10 @@ public sealed partial class MediaPanel : UserControl
         _vlc = null;
     }
 
-    private void SetControlsEnabled(bool enabled)
+    private void SetControlsEnabled(bool enabled, bool allowNetworkPreview = false)
     {
-        foreach (Control control in new Control[] { PreviewLinkButton, DownloadButton, RecordButton, SdpButton,
+        PreviewLinkButton.IsEnabled = enabled || allowNetworkPreview;
+        foreach (Control control in new Control[] { DownloadButton, RecordButton, SdpButton,
             MergeButton, TranscodeButton, OpenOutputButton })
             control.IsEnabled = enabled;
         CopyLinkButton.IsEnabled = enabled && _input is not null;
@@ -182,6 +183,7 @@ public sealed partial class MediaPanel : UserControl
         ShowOutput("下载完成", output);
     });
 
+    // RTP 和 UDP 的预览与录制可能争用同一个接收端口。
     private async void Record_Click(object sender, RoutedEventArgs e) => await RunAsync("录制中", async token =>
     {
         Input input = RequireSource();
@@ -196,7 +198,7 @@ public sealed partial class MediaPanel : UserControl
         RecordingResult recording = await _media.RecordAsync(source, directory, options, CreateProgress(), token,
             format?.IsLive, RecordingEvents(token), format?.Headers, selection);
         await FinishRecordingAsync(recording, directory, settings);
-    });
+    }, allowNetworkPreview: _input is { Source.Scheme: not ("rtp" or "udp") });
 
     private async void RecordSdp_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
     {
@@ -370,13 +372,14 @@ public sealed partial class MediaPanel : UserControl
     /// <summary>在窗口空闲时执行一个前台任务，并统一处理状态反馈。</summary>
     /// <param name="title">任务开始时显示的状态标题。</param>
     /// <param name="action">接收取消令牌的任务回调。</param>
+    /// <param name="allowNetworkPreview">是否允许在任务期间打开当前媒体源的预览。</param>
     /// <returns>前台任务及其界面恢复完成的任务。若已有任务在执行，则直接返回。</returns>
-    internal async Task RunAsync(string title, Func<CancellationToken, Task> action)
+    internal async Task RunAsync(string title, Func<CancellationToken, Task> action, bool allowNetworkPreview = false)
     {
         if (IsBusy || _closeWhenIdle)
             return;
         _operation = new CancellationTokenSource();
-        SetControlsEnabled(false);
+        SetControlsEnabled(false, allowNetworkPreview);
         StartStage(title);
         try { await action(_operation.Token); }
         catch (OperationCanceledException)
