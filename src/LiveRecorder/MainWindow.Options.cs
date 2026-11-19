@@ -17,6 +17,17 @@ public sealed partial class MainWindow
         ModeBox.SelectedIndex = settings.Mode;
     }
 
+    /// <summary>配置新预览会话使用的 VLC 解码方式。</summary>
+    private async void PreviewOptions_Click(object sender, RoutedEventArgs e) => await MediaPane.HandlePickerAsync(async () =>
+    {
+        var decoder = SettingChoice("预览解码器", (int)PortableStorage.Configuration.Current.Media.PreviewDecoder,
+            "自动（IPTV 使用软件解码）", "优先硬件解码", "软件解码");
+        var hint = new TextBlock { Text = "设置在下次打开预览时生效。", TextWrapping = TextWrapping.Wrap };
+        await ShowOptionsAsync("预览设置", FormPanel(decoder, hint), () =>
+            PortableStorage.Configuration.Update(settings => settings with
+                { Media = settings.Media with { PreviewDecoder = (PreviewDecoder)decoder.SelectedIndex } }));
+    });
+
     /// <summary>打开断流重连设置，仅在用户确认保存后更新录制配置。</summary>
     /// <param name="sender">触发设置对话框的菜单项。</param>
     /// <param name="e">菜单点击事件数据。</param>

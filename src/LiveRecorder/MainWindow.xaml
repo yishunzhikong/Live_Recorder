@@ -27,10 +27,14 @@
                             <MenuFlyoutItem Text="工具版本管理…" Click="ManageToolVersions_Click" />
                         </MenuBarItem>
                         <MenuBarItem Title="选项">
+                            <MenuFlyoutItem Text="预览设置…" Click="PreviewOptions_Click" />
                             <MenuFlyoutItem Text="保存到…" Click="OutputOptions_Click" />
                             <MenuFlyoutItem Text="编码设置…" Click="EncodingOptions_Click" />
                             <MenuFlyoutItem Text="断流重连设置…" Click="ReconnectOptions_Click" />
                             <MenuFlyoutItem Text="日志设置…" Click="LogOptions_Click" />
+                        </MenuBarItem>
+                        <MenuBarItem Title="关于">
+                            <MenuFlyoutItem Text="关于 Live Recorder…" Click="About_Click" />
                         </MenuBarItem>
                     </MenuBar>
 

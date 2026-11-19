@@ -19,6 +19,20 @@ public sealed record ToolVersion(string Tag, bool InUse)
 public sealed record ToolInstallation(string? ActiveTag, string? ActiveExecutable, IReadOnlyList<ToolVersion> Versions);
 public sealed record ToolReleasePage(IReadOnlyList<string> Tags, int? NextPage, bool UsedWebFallback);
 
+/// <summary>来自 GitHub 稳定发行版的应用更新。</summary>
+public sealed class ApplicationUpdate
+{
+    internal ApplicationUpdate(string tag, Version version, string name, Uri address, string sha256, long? size)
+        => (Tag, Version, Name, Address, Sha256, Size) = (tag, version, name, address, sha256, size);
+
+    public string Tag { get; }
+    public Version Version { get; }
+    internal string Name { get; }
+    internal Uri Address { get; }
+    internal string Sha256 { get; }
+    internal long? Size { get; }
+}
+
 /// <summary>查询、校验并管理便携目录中的媒体工具版本。</summary>
 public sealed class ToolUpdater
 {
@@ -27,6 +41,7 @@ public sealed class ToolUpdater
     private static readonly Regex VersionText = new(@"\A[0-9]+(?:\.[0-9]+){1,3}\z", RegexOptions.CultureInvariant);
     private static readonly Tool Ffmpeg = new("ffmpeg", "GyanD/codexffmpeg");
     private static readonly Tool YtDlp = new("yt-dlp", "yt-dlp/yt-dlp");
+    private static readonly Tool Application = new("LiveRecorder", "yishunzhikong/Live_Recorder");
     private const string DenoVersion = "2.9.8";
     private const string DenoArchiveName = "deno-x86_64-pc-windows-msvc.zip";
     private const string DenoSha256 = "cba84b26e0df5ae7f74fc66b86a95b866872a86292ebd84fa1e959927edd93bf";
@@ -62,6 +77,25 @@ public sealed class ToolUpdater
     public string? GetActiveTag(MediaTool tool) => GetInstallation(tool).ActiveTag;
 
     public IReadOnlyList<ToolVersion> GetInstalledVersions(MediaTool kind) => GetInstallation(kind).Versions;
+
+    /// <summary>通过与媒体工具相同的 API 和网页回退检查应用稳定版。</summary>
+    public async Task<(ApplicationUpdate? Update, bool UsedWebFallback)> CheckApplicationUpdateAsync(
+        Version current, CancellationToken token, Action? onWebFallback = null)
+    {
+        var (asset, fallback) = await ReadWithWebFallbackAsync(
+            ct => ReadApiReleaseAsync(Application, ApplicationAssetName, current, null, ct, prefixedTag: true),
+            ct => ReadWebReleaseAsync(Application, ApplicationAssetName, current, null, ct, prefixedTag: true),
+            token, onWebFallback).ConfigureAwait(false);
+        return (asset is null ? null : new ApplicationUpdate(asset.Tag, asset.Version, asset.Name, asset.Address,
+            asset.Sha256, asset.Size), fallback);
+    }
+
+    /// <summary>下载安装包，并在交给安装程序前核实下载文件的大小与 SHA-256。</summary>
+    public Task DownloadApplicationUpdateAsync(ApplicationUpdate update, string destination,
+        IProgress<MediaProgress>? progress, CancellationToken token) =>
+        DownloadAsync(update.Address, update.Size, update.Sha256, destination, progress, token);
+
+    private static string ApplicationAssetName(string tag) => $"LiveRecorder-{tag}-win-x64.zip";
 
     /// <summary>一次扫描同时生成已装版本列表、活动标签和可执行文件路径。</summary>
     /// <param name="kind">需要操作的媒体工具。</param>
@@ -178,7 +212,7 @@ public sealed class ToolUpdater
             string tag = release.GetProperty("tag_name").GetString() ?? "";
             if (!release.GetProperty("draft").GetBoolean() && !release.GetProperty("prerelease").GetBoolean() &&
                 VersionText.IsMatch(tag) && Version.TryParse(tag, out Version? version) &&
-                FindApiAsset(release, tool, kind, tag, version) is not null)
+                FindApiAsset(release, tool, AssetName(tool, kind, tag), tag, version) is not null)
                 tags.Add(tag);
         }
         bool hasNext = response.Headers.TryGetValues("Link", out var links) &&
@@ -291,8 +325,8 @@ public sealed class ToolUpdater
         if (requestedTag is null || current is null)
         {
             (release, usedWebFallback) = await ReadWithWebFallbackAsync(
-                ct => ReadApiReleaseAsync(tool, kind, before, requestedTag, ct),
-                ct => ReadWebReleaseAsync(tool, kind, before, requestedTag, ct), token, onWebFallback).ConfigureAwait(false);
+                ct => ReadApiReleaseAsync(tool, tag => AssetName(tool, kind, tag), before, requestedTag, ct),
+                ct => ReadWebReleaseAsync(tool, tag => AssetName(tool, kind, tag), before, requestedTag, ct), token, onWebFallback).ConfigureAwait(false);
         }
         if (kind == MediaTool.YtDlp)
             await InstallDenoAsync(progress, token).ConfigureAwait(false);
@@ -403,8 +437,8 @@ public sealed class ToolUpdater
         catch (UnauthorizedAccessException ex) { Debug.WriteLine(ex); }
     }
 
-    private async Task<ReleaseAsset?> ReadApiReleaseAsync(Tool tool, MediaTool kind, Version? before, string? requestedTag,
-        CancellationToken token)
+    private async Task<ReleaseAsset?> ReadApiReleaseAsync(Tool tool, Func<string, string> assetName, Version? before, string? requestedTag,
+        CancellationToken token, bool prefixedTag = false)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
@@ -422,11 +456,11 @@ public sealed class ToolUpdater
             throw new InvalidDataException("上游返回的版本与所选版本不匹配。");
         if (release.GetProperty("draft").GetBoolean() || release.GetProperty("prerelease").GetBoolean())
             throw new InvalidDataException("上游未返回有效的稳定版。");
-        Version latest = ParseReleaseTag(tag);
+        Version latest = ParseReleaseTag(tag, prefixedTag);
         if (before is not null && latest <= before)
             return null;
 
-        return FindApiAsset(release, tool, kind, tag, latest) ??
+        return FindApiAsset(release, tool, assetName(tag), tag, latest) ??
             throw new InvalidDataException("上游未提供该版本的下载文件及 SHA-256 校验值。");
     }
 
@@ -455,9 +489,8 @@ public sealed class ToolUpdater
         throw new HttpRequestException(message, null, response.StatusCode);
     }
 
-    private static ReleaseAsset? FindApiAsset(JsonElement release, Tool tool, MediaTool kind, string tag, Version version)
+    private static ReleaseAsset? FindApiAsset(JsonElement release, Tool tool, string name, string tag, Version version)
     {
-        string name = AssetName(tool, kind, tag);
         JsonElement asset = release.GetProperty("assets").EnumerateArray()
             .FirstOrDefault(entry => entry.GetProperty("name").GetString() == name &&
                 entry.GetProperty("state").GetString() == "uploaded");
@@ -471,8 +504,8 @@ public sealed class ToolUpdater
         return new ReleaseAsset(tag, version, name, address, publishedHash[7..], size);
     }
 
-    private async Task<ReleaseAsset?> ReadWebReleaseAsync(Tool tool, MediaTool kind, Version? before, string? requestedTag,
-        CancellationToken token)
+    private async Task<ReleaseAsset?> ReadWebReleaseAsync(Tool tool, Func<string, string> assetName, Version? before, string? requestedTag,
+        CancellationToken token, bool prefixedTag = false)
     {
         try
         {
@@ -492,11 +525,11 @@ public sealed class ToolUpdater
             string tag = page.AbsolutePath[tagPrefix.Length..];
             if (requestedTag is not null && requestedTag != tag)
                 throw new InvalidDataException("GitHub 发布页返回的版本与所选版本不匹配。");
-            Version latest = ParseReleaseTag(tag);
+            Version latest = ParseReleaseTag(tag, prefixedTag);
             if (before is not null && latest <= before)
                 return null;
 
-            string name = AssetName(tool, kind, tag);
+            string name = assetName(tag);
             Uri address = AssetAddress(tool, tag, name);
             var assetsPage = new Uri($"https://github.com{releases}/expanded_assets/{tag}");
             using var assets = await _http.GetAsync(assetsPage, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
@@ -507,7 +540,7 @@ public sealed class ToolUpdater
             // The asset's copy button identifies its published digest by filename.
             string label = Regex.Escape($"Copy to clipboard digest for {name}");
             MatchCollection digests = Regex.Matches(html,
-                $$"""<clipboard-copy\s+[^>]*\saria-label="{{label}}"[^>]*\svalue="sha256:([0-9a-fA-F]{64})"[^>]*>""");
+                $$"""<clipboard-copy(?=\s)(?=[^>]*\saria-label="{{label}}")(?=[^>]*\svalue="sha256:([0-9a-fA-F]{64})")[^>]*>""");
             if (digests.Count != 1 || !html.Contains($"href=\"{address.AbsolutePath}\"", StringComparison.Ordinal))
                 throw new InvalidDataException($"GitHub 发布页未提供 {name} 及其 SHA-256 校验值。");
             return new ReleaseAsset(tag, latest, name, address, digests[0].Groups[1].Value, null);
@@ -520,9 +553,14 @@ public sealed class ToolUpdater
         }
     }
 
-    private static Version ParseReleaseTag(string tag) =>
-        VersionText.IsMatch(tag) && Version.TryParse(tag, out Version? version)
-            ? version : throw new InvalidDataException("上游未返回有效的稳定版。");
+    private static Version ParseReleaseTag(string tag, bool prefixedTag = false)
+    {
+        string number = prefixedTag && tag.StartsWith('v') ? tag[1..] : tag;
+        if ((!prefixedTag || number.Length < tag.Length) && VersionText.IsMatch(number) &&
+            Version.TryParse(number, out Version? version) && (!prefixedTag || version is { Build: >= 0, Revision: -1 }))
+            return version;
+        throw new InvalidDataException("上游未返回有效的稳定版。");
+    }
 
     private static string AssetName(Tool tool, MediaTool kind, string tag) =>
         kind == MediaTool.Ffmpeg ? $"ffmpeg-{tag}-essentials_build.zip" : tool.Executable;

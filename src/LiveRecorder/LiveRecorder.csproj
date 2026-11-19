@@ -28,6 +28,7 @@
     <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
     <ProjectReference Include="../LiveRecorder.Core/LiveRecorder.Core.csproj" />
+    <EmbeddedResource Include="ApplyPortableUpdate.ps1" LogicalName="LiveRecorder.ApplyPortableUpdate.ps1" />
     <None Include="../../icon/icon.ico" Link="Assets/icon.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- WinUI copies compiled XAML to bin but can omit these files from an unpackaged publish. -->
