@@ -6,8 +6,7 @@ namespace LiveRecorder;
 // 连接工具菜单、版本管理对话框和媒体服务。
 public sealed partial class MainWindow
 {
-    private readonly ToolUpdater _toolUpdater = new(PortableStorage.ToolsDirectory, PortableStorage.CacheDirectory,
-        configuration: PortableStorage.Configuration);
+    private readonly ToolUpdater _toolUpdater;
     private string? _ffmpegPath;
 
     /// <summary>使用同一份安装快照刷新指定媒体服务。</summary>
@@ -21,16 +20,18 @@ public sealed partial class MainWindow
         }
         else
         {
-            _webAnalyzer = new WebVideoAnalyzer(installed.ActiveExecutable, _toolUpdater.DenoPath, PortableStorage.CacheDirectory);
+            _webAnalyzer = new WebVideoAnalyzer(installed.ActiveExecutable, _toolUpdater.DenoPath, PortableStorage.CacheDirectory, _debug);
         }
         MediaPane.SetTools(_ffmpegPath, _webAnalyzer);
+        _debug.Write("Tools", $"工具已重新绑定 · 工具={tool} · 使用版本={installed.ActiveTag ?? "无"} · 已装版本={installed.Versions.Count}。");
     }
 
     private (WebVideoAnalyzer Web, string? FfmpegPath) ResolveMediaTools()
     {
         string? ffmpeg = _toolUpdater.GetExecutable(MediaTool.Ffmpeg);
         string? ytDlp = _toolUpdater.GetExecutable(MediaTool.YtDlp);
-        return (new WebVideoAnalyzer(ytDlp, _toolUpdater.DenoPath, PortableStorage.CacheDirectory), ffmpeg);
+        _debug.Write("Tools", $"读取便携工具 · FFmpeg 可用={ffmpeg is not null} · yt-dlp 可用={ytDlp is not null}。");
+        return (new WebVideoAnalyzer(ytDlp, _toolUpdater.DenoPath, PortableStorage.CacheDirectory, _debug), ffmpeg);
     }
 
     private async void UpgradeFfmpeg_Click(object sender, RoutedEventArgs e) => await UpgradeToolAsync(MediaTool.Ffmpeg, "FFmpeg");

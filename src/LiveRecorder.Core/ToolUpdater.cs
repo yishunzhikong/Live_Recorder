@@ -49,6 +49,7 @@ public sealed class ToolUpdater
     private readonly string _cacheDirectory;
     private readonly HttpClient _http;
     private readonly PortableConfiguration _configuration;
+    private readonly DebugTrace? _debug;
 
     private sealed record Tool(string Name, string Repository)
     {
@@ -62,11 +63,13 @@ public sealed class ToolUpdater
     /// <param name="cacheDirectory">下载和安装暂存根目录。</param>
     /// <param name="http">可选的 HTTP 客户端。省略时使用内置客户端。</param>
     /// <param name="configuration">可选的共享便携配置。省略时从工具目录的同级配置目录载入。</param>
-    public ToolUpdater(string directory, string cacheDirectory, HttpClient? http = null, PortableConfiguration? configuration = null)
+    public ToolUpdater(string directory, string cacheDirectory, HttpClient? http = null, PortableConfiguration? configuration = null,
+        DebugTrace? debug = null)
     {
         _directory = directory;
         _cacheDirectory = cacheDirectory;
         _http = http ?? Network;
+        _debug = debug;
         _configuration = configuration ?? new PortableConfiguration(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(directory))!, "config"));
         if (configuration is null)
             _configuration.Load(directory);
@@ -82,10 +85,12 @@ public sealed class ToolUpdater
     public async Task<(ApplicationUpdate? Update, bool UsedWebFallback)> CheckApplicationUpdateAsync(
         Version current, CancellationToken token, Action? onWebFallback = null)
     {
+        _debug?.Write("Update", $"检查应用发行版 · 当前版本={current}。");
         var (asset, fallback) = await ReadWithWebFallbackAsync(
             ct => ReadApiReleaseAsync(Application, ApplicationAssetName, current, null, ct, prefixedTag: true),
             ct => ReadWebReleaseAsync(Application, ApplicationAssetName, current, null, ct, prefixedTag: true),
             token, onWebFallback).ConfigureAwait(false);
+        _debug?.Write("Update", $"应用更新检查结束 · 新版={asset?.Tag ?? "无"} · 网页回退={fallback}。");
         return (asset is null ? null : new ApplicationUpdate(asset.Tag, asset.Version, asset.Name, asset.Address,
             asset.Sha256, asset.Size), fallback);
     }
@@ -203,6 +208,7 @@ public sealed class ToolUpdater
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
         using var request = CreateApiRequest(tool, $"releases?per_page=30&page={page}");
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        _debug?.Write("Update", $"版本列表查询 · 项目={tool.Name} · API 页={page} · HTTP={(int)response.StatusCode}。");
         EnsureApiSuccess(response);
         await using Stream body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
         using JsonDocument document = await JsonDocument.ParseAsync(body, cancellationToken: timeout.Token).ConfigureAwait(false);
@@ -221,7 +227,7 @@ public sealed class ToolUpdater
     }
 
     // 只有 GitHub API 返回 HTTP 403 时才改查官方发布页。
-    private static async Task<(T Value, bool UsedWebFallback)> ReadWithWebFallbackAsync<T>(
+    private async Task<(T Value, bool UsedWebFallback)> ReadWithWebFallbackAsync<T>(
         Func<CancellationToken, Task<T>> readApi, Func<CancellationToken, Task<T>> readWeb,
         CancellationToken token, Action? onWebFallback)
     {
@@ -232,6 +238,7 @@ public sealed class ToolUpdater
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
         {
             token.ThrowIfCancellationRequested();
+            _debug?.Write("Update", "GitHub API 返回 HTTP 403，切换到官方发布页。");
             onWebFallback?.Invoke();
             return (await readWeb(token).ConfigureAwait(false), true);
         }
@@ -320,6 +327,7 @@ public sealed class ToolUpdater
             .ConfigureAwait(false))
             current = null;
         Version? before = current?.Version;
+        _debug?.Write("Tools", $"检查工具版本 · 工具={tool.Name} · 已验证本地版本={before} · 指定标签={requestedTag ?? "最新稳定版"}。");
         ReleaseAsset? release = null;
         bool usedWebFallback = false;
         if (requestedTag is null || current is null)
@@ -445,6 +453,7 @@ public sealed class ToolUpdater
         string endpoint = requestedTag is null ? "latest" : $"tags/{requestedTag}";
         using var request = CreateApiRequest(tool, $"releases/{endpoint}");
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        _debug?.Write("Update", $"发行版 API 响应 · 项目={tool.Name} · HTTP={(int)response.StatusCode}。");
         if (response.StatusCode == HttpStatusCode.NotFound && requestedTag is not null)
             throw new InvalidDataException($"GitHub 上找不到 {tool.Name} {requestedTag} 的正式发行版。");
         EnsureApiSuccess(response);
@@ -457,6 +466,7 @@ public sealed class ToolUpdater
         if (release.GetProperty("draft").GetBoolean() || release.GetProperty("prerelease").GetBoolean())
             throw new InvalidDataException("上游未返回有效的稳定版。");
         Version latest = ParseReleaseTag(tag, prefixedTag);
+        _debug?.Write("Update", $"API 返回稳定标签 · 项目={tool.Name} · 标签={tag}。");
         if (before is not null && latest <= before)
             return null;
 
@@ -526,6 +536,7 @@ public sealed class ToolUpdater
             if (requestedTag is not null && requestedTag != tag)
                 throw new InvalidDataException("GitHub 发布页返回的版本与所选版本不匹配。");
             Version latest = ParseReleaseTag(tag, prefixedTag);
+            _debug?.Write("Update", $"官方发布页返回稳定标签 · 项目={tool.Name} · 标签={tag}。");
             if (before is not null && latest <= before)
                 return null;
 
@@ -576,6 +587,7 @@ public sealed class ToolUpdater
         using var response = await _http.GetAsync(address, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         long size = publishedSize ?? response.Content.Headers.ContentLength ?? 0;
+        _debug?.Write("Update", $"开始下载发行资源 · 文件={Path.GetFileName(address.AbsolutePath)} · 预期字节={size}。");
         if (size <= 0)
             throw new InvalidDataException("GitHub 下载响应未提供文件大小。");
         await using Stream input = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
@@ -604,6 +616,7 @@ public sealed class ToolUpdater
         }
         if (received != size || !Convert.ToHexString(hash.GetHashAndReset()).Equals(sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("下载文件的大小或 SHA-256 与上游记录不符。");
+        _debug?.Write("Update", $"发行资源校验通过 · 字节={received} · SHA-256 匹配。");
     }
 
     private static (string Arguments, string Pattern) VersionCheck(MediaTool kind) => kind == MediaTool.Ffmpeg

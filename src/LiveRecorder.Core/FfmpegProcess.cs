@@ -38,7 +38,7 @@ internal static class FfmpegProcess
         Func<Stream, CancellationToken, Task>? writeInput = null,
         bool finishOnCancellation = false,
         Action? videoWritten = null,
-        Action<string>? readDiagnostic = null, bool traceTimestamps = false)
+        Action<string>? readDiagnostic = null, bool traceTimestamps = false, DebugTrace? debug = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ProcessStartInfo start = ToolProcess.CreateStartInfo(ToolProcess.RequireExecutable(executable, "FFmpeg"), cacheDirectory);
@@ -65,6 +65,9 @@ internal static class FfmpegProcess
             throw new InvalidOperationException("无法启动 FFmpeg，请在「工具」菜单中检查安装。", ex);
         }
 
+        long started = Stopwatch.GetTimestamp();
+        int pid = process.Id;
+        debug?.Write("FFmpeg", $"启动子进程 PID={pid} · 输入管道={writeInput is not null} · 输出管道={readOutput is not null} · 允许正常收尾={finishOnCancellation}。");
         using var exitMonitoring = new CancellationTokenSource();
         using var inputWriting = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var diagnostics = new Queue<string>();
@@ -98,6 +101,8 @@ internal static class FfmpegProcess
             ToolProcess.Stop(process);
             try { await Task.WhenAll(exit, input, output, errors, stopping).ConfigureAwait(false); }
             catch (Exception) { /* Preserve the original failure. */ }
+            if (debug?.Enabled == true && process.HasExited)
+                debug.Write("FFmpeg", $"子进程 PID={pid} 退出 · 状态码={process.ExitCode} · 已取消={cancellationToken.IsCancellationRequested} · 耗时={Stopwatch.GetElapsedTime(started).TotalSeconds:F2} 秒。");
         }
     }
 

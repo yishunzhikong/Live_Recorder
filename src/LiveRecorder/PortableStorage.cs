@@ -27,6 +27,9 @@ internal static class PortableStorage
         TryInitialize(() => Directory.CreateDirectory(CacheDirectory));
         TryInitialize(() => Directory.CreateDirectory(LogsDirectory));
         Log.Configure(Configuration.Current.Logging);
+        LoggingSettings logging = Configuration.Current.Logging;
+        MediaSettings media = Configuration.Current.Media;
+        Log.Write(LogLevel.Debug, "Configuration", $"便携配置已载入 · 日志档位={logging.Level} · 单片={logging.FileSizeMb} MB · 保留={logging.FileCount} · 媒体模式={media.Mode} · 预览解码={media.PreviewDecoder} · 录制分片={media.PartDurationSeconds} 秒。");
         if (InitializationError is { } error)
             Log.Write(LogLevel.Warning, "Configuration", "无法初始化便携数据目录或读取配置。", error);
         if (Configuration.RecoveryBackup is { } backup)

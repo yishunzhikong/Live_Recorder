@@ -24,6 +24,7 @@ internal static class PortableApplicationUpdate
         string staging = Directory.CreateDirectory(Path.Combine(root, $".update-{Guid.NewGuid():N}")).FullName;
         try
         {
+            PortableStorage.Log.Write(LogLevel.Debug, "Update", $"建立应用更新暂存目录 · 目标版本={update.Tag}。");
             string archive = Path.Combine(staging, "app.zip");
             await updater.DownloadApplicationUpdateAsync(update, archive, progress, token).ConfigureAwait(false);
             string expectedRoot = $"LiveRecorder-{update.Tag}-win-x64";
@@ -34,6 +35,7 @@ internal static class PortableApplicationUpdate
                 !File.Exists(Path.Combine(payload, "LiveRecorder.dll")) ||
                 !File.Exists(Path.Combine(payload, "MainWindow.xbf")))
                 throw new InvalidDataException("安装包内的程序版本或运行文件与发行版不符。");
+            PortableStorage.Log.Write(LogLevel.Debug, "Update", $"应用更新包已解压并通过版本校验 · 程序版本={version.FileVersion}。");
             Directory.Move(payload, Path.Combine(staging, "next"));
             File.Delete(archive);
             await using Stream script = typeof(PortableApplicationUpdate).Assembly
@@ -87,6 +89,7 @@ internal static class PortableApplicationUpdate
             "-ParentProcessId", current.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) })
             start.ArgumentList.Add(argument);
         using Process process = Process.Start(start) ?? throw new InvalidOperationException("无法启动应用更新程序。");
+        PortableStorage.Log.Write(LogLevel.Debug, "Update", $"已启动独立安装程序 · PID={process.Id}，等待应用退出后替换文件。");
     }
 
     internal static void Discard(string staging)

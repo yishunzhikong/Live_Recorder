@@ -10,12 +10,12 @@ public sealed class PreviewStream : IAsyncDisposable
     private readonly Process _process;
     private readonly CancellationTokenRegistration _cancellation;
 
-    private PreviewStream(Process process, string errorMessage, CancellationToken token)
+    private PreviewStream(Process process, string errorMessage, CancellationToken token, DebugTrace? debug)
     {
         _process = process;
         Content = process.StandardOutput.BaseStream;
         _cancellation = token.UnsafeRegister(static state => ToolProcess.Stop((Process)state!), process);
-        Completion = MonitorAsync(process, errorMessage, token);
+        Completion = MonitorAsync(process, errorMessage, token, debug);
     }
 
     /// <summary>子进程标准输出中的媒体数据流。</summary>
@@ -23,7 +23,7 @@ public sealed class PreviewStream : IAsyncDisposable
     /// <summary>监控子进程退出的任务。非零退出通过任务异常报告。</summary>
     public Task Completion { get; }
 
-    internal static PreviewStream Start(ProcessStartInfo start, string errorMessage, CancellationToken token)
+    internal static PreviewStream Start(ProcessStartInfo start, string errorMessage, CancellationToken token, DebugTrace? debug = null)
     {
         token.ThrowIfCancellationRequested();
         start.RedirectStandardOutput = true;
@@ -32,7 +32,8 @@ public sealed class PreviewStream : IAsyncDisposable
         try
         {
             process.Start();
-            return new PreviewStream(process, errorMessage, token);
+            debug?.Write("Playback", $"启动预览供流子进程 · 工具={Path.GetFileName(start.FileName)} · PID={process.Id}。");
+            return new PreviewStream(process, errorMessage, token, debug);
         }
         catch (Exception ex)
         {
@@ -44,7 +45,7 @@ public sealed class PreviewStream : IAsyncDisposable
         }
     }
 
-    private static async Task MonitorAsync(Process process, string errorMessage, CancellationToken token)
+    private static async Task MonitorAsync(Process process, string errorMessage, CancellationToken token, DebugTrace? debug)
     {
         // 持续排空 stderr，避免诊断管道填满后阻塞媒体输出。
         Task<string> errors = ToolProcess.ReadDiagnosticTailAsync(process.StandardError);
@@ -57,7 +58,12 @@ public sealed class PreviewStream : IAsyncDisposable
                 throw new InvalidOperationException(detail.Length == 0 ? errorMessage : detail);
             }
         }
-        finally { await errors.ConfigureAwait(false); }
+        finally
+        {
+            await errors.ConfigureAwait(false);
+            if (debug?.Enabled == true)
+                debug.Write("Playback", $"预览供流结束 · PID={process.Id} · 状态码={(process.HasExited ? process.ExitCode : (int?)null)} · 已取消={token.IsCancellationRequested}。");
+        }
     }
 
     /// <summary>停止子进程并释放诊断监控、取消注册和输出流。</summary>

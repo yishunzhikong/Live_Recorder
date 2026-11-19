@@ -23,7 +23,7 @@ public sealed record MediaProgress(long? Bytes = null, long? TotalBytes = null, 
 /// <summary>提供媒体探测、下载、录制、预览输入和本地编辑。</summary>
 /// <param name="ffmpeg">选用的 FFmpeg 路径。需要 FFmpeg 的操作会检查该路径。</param>
 /// <param name="cacheDirectory">便携缓存目录，用于未发布的媒体输出。</param>
-public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
+public sealed partial class MediaService(string? ffmpeg, string cacheDirectory, DebugTrace? debug = null)
 {
     private const int CopyBuffer = 128 * 1024;
     private const long DefaultTimeoutMicroseconds = 15_000_000;
@@ -69,9 +69,9 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     /// <param name="headers">可选的媒体请求头。</param>
     /// <returns>选中的入口。探测失败时保留原始地址。</returns>
     public static async Task<NetworkMediaSelection> SelectNetworkMediaAsync(Uri source, CancellationToken token,
-        MediaRequestHeaders? headers = null)
+        MediaRequestHeaders? headers = null, DebugTrace? debug = null)
     {
-        HttpMediaState? state = await InspectHttpMediaAsync(source, token, headers).ConfigureAwait(false);
+        HttpMediaState? state = await InspectHttpMediaAsync(source, token, headers, debug).ConfigureAwait(false);
         token.ThrowIfCancellationRequested();
         return new(state?.VariantSource ?? source, state?.HlsSegments is not null, state?.Program,
             state?.HasFixedDuration == true, state?.VariantPlaylist);
@@ -86,13 +86,23 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     private sealed record HlsVariant(Uri Playlist, long Pixels, long Bandwidth, string? AudioGroup, string? VideoGroup, int Program);
     private static readonly Regex HlsAttribute = new(@"(?:^|,)\s*([A-Z0-9-]+)=(?:""([^""]*)""|([^,]*))", RegexOptions.CultureInvariant);
 
-    private static async Task<HttpMediaState?> InspectHttpMediaAsync(Uri source, CancellationToken token, MediaRequestHeaders? headers)
+    private static async Task<HttpMediaState?> InspectHttpMediaAsync(Uri source, CancellationToken token, MediaRequestHeaders? headers,
+        DebugTrace? debug = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(5));
-        try { return await ReadHttpMediaAsync(source, 0, timeout.Token, headers).ConfigureAwait(false); }
+        long started = Stopwatch.GetTimestamp();
+        try
+        {
+            HttpMediaState? state = await ReadHttpMediaAsync(source, 0, timeout.Token, headers).ConfigureAwait(false);
+            if (debug?.Enabled == true)
+                debug.Write("Media", $"HTTP 探测 · 已识别={state is not null} · 定长={state?.HasFixedDuration} · HLS 分片={state?.HlsSegments?.Count} · 序号={state?.HlsSequence} · 目标片长={state?.HlsTargetDurationSeconds} 秒 · 耗时={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} 毫秒。");
+            return state;
+        }
         catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException or XmlException)
         {
+            if (debug?.Enabled == true)
+                debug.Write("Media", $"HTTP 探测未完成 · 类型={ex.GetType().Name} · HTTP={(ex as HttpRequestException)?.StatusCode} · 任务已取消={token.IsCancellationRequested} · 耗时={Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} 毫秒。");
             return null;
         }
     }
@@ -255,12 +265,14 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         bool httpSource = source.Scheme is "http" or "https";
         if (httpSource && selection?.IsHls != true && !IsPlaylistPath(source.AbsolutePath))
         {
+            debug?.Write("Download", "尝试直接通过 HTTP 保存媒体。");
             string? directFile = await TryDownloadHttpAsync(source, directory, progress, token, headers).ConfigureAwait(false);
             if (directFile is not null)
                 return directFile;
         }
 
-        selection ??= await SelectNetworkMediaAsync(source, token, headers).ConfigureAwait(false);
+        selection ??= await SelectNetworkMediaAsync(source, token, headers, debug).ConfigureAwait(false);
+        debug?.Write("Download", $"交由 FFmpeg 原流封装 · 容器=Matroska · HLS={selection.IsHls} · 节目={selection.Program}。");
         DateTime started = DateTime.Now;
         string output = Path.Combine(Path.GetFullPath(directory), TimestampedName("video", started) + ".mkv");
         return await WriteMediaAsync(output, NetworkInput(selection.Source, hls: httpSource, headers: headers), ["-c", "copy"], "matroska", progress, token,
@@ -292,7 +304,8 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
             .. MapStreams(program), "-c", "copy", "-f", "mpegts", "pipe:1"];
         foreach (string argument in arguments)
             start.ArgumentList.Add(argument);
-        return PreviewStream.Start(start, "FFmpeg 无法读取预览媒体流。", token);
+        debug?.Write("Playback", $"准备 FFmpeg 预览供流 · 协议={source.Scheme} · HLS={hls} · 节目={program}。");
+        return PreviewStream.Start(start, "FFmpeg 无法读取预览媒体流。", token, debug);
     }
 
     /// <summary>按编号读取一个录制目录内的分片并生成单个文件。</summary>
@@ -317,6 +330,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
             throw new InvalidOperationException("所选文件夹没有可用的 Live Recorder 录制分片。");
         string name = Path.GetFileName(recordingDirectory);
         bool matroska = parts[0].Extension == RecordingParts.MatroskaExtension;
+        debug?.Write("Merge", $"读取 {parts.Length} 个录制分片 · 容器={(matroska ? "MKV" : "TS")} · 原流合并={copy} · 编码器={encoder}。");
         string[] input = matroska
             ? ["-nostdin", "-protocol_whitelist", "file,pipe", "-f", "concat", "-safe", "0", "-i", "pipe:0"]
             : ["-nostdin", "-f", "mpegts", "-i", "pipe:0"];
@@ -362,6 +376,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     {
         if (!File.Exists(source))
             throw new FileNotFoundException("找不到需要转码的媒体文件。", source);
+        debug?.Write("Transcode", $"开始探测待转码文件 · 编码器={encoder} · 去隔行={deinterlace}。");
         string[] input = ["-protocol_whitelist", "file", "-i", Path.GetFullPath(source)];
         SourceEncodingInfo streams = await ProbeEncodingAsync(input, token).ConfigureAwait(false);
         EncodingSettings encoding = settings ?? DefaultTranscodeSettings;
@@ -388,10 +403,11 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
         await FfmpegProcess.RunAsync(ffmpeg, cacheDirectory,
             ["-loglevel", "info", .. input, .. MapStreams(), "-c", "copy", "-t", "0", "-f", "null", "-"],
-            null, timeout.Token, writeInput: writeInput is null ? null : WriteProbeInputAsync, readDiagnostic: source.Read)
+            null, timeout.Token, writeInput: writeInput is null ? null : WriteProbeInputAsync, readDiagnostic: source.Read, debug: debug)
             .ConfigureAwait(false);
         if (!source.HasVideo && source.AudioCodec is null)
             throw new InvalidOperationException("找不到可用的音频或视频轨道。");
+        debug?.Write("Media", $"轨道探测 · 视频={source.VideoCodec ?? "无"} · 分辨率={source.VideoResolution} · 视频码率={source.VideoBitrate} · 音频={source.AudioCodec ?? "无"} · 采样率={source.AudioSampleRate} · 音频码率={source.AudioBitrate}。");
         return source;
 
         async Task WriteProbeInputAsync(Stream stream, CancellationToken ct)
@@ -422,6 +438,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
             line.Contains("Could not find tag for codec", StringComparison.OrdinalIgnoreCase) &&
             line.Contains("not currently supported in container", StringComparison.OrdinalIgnoreCase)))
         {
+            debug?.Write("Media", "MP4 无法封装当前轨道，切换到 Matroska。");
             return await WriteMediaAsync(Path.ChangeExtension(output, ".mkv"), input, codecs, "matroska", progress, token, writeInput)
                 .ConfigureAwait(false);
         }
@@ -441,13 +458,17 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         Action? noteVideo = audioName is null ? null : () => hasVideo = true;
         try
         {
+            if (debug?.Enabled == true)
+                debug.Write("Media", $"写入媒体 · 容器={format} · 节目={program} · 编码参数={string.Join(' ', codecs)}。");
             await FfmpegProcess.RunAsync(ffmpeg, cacheDirectory,
                 ["-n", .. input, .. MapStreams(program), .. codecs, .. containerOptions, "-f", format, partial],
-                progress, token, writeInput: writeInput, videoWritten: noteVideo).ConfigureAwait(false);
+                progress, token, writeInput: writeInput, videoWritten: noteVideo, debug: debug).ConfigureAwait(false);
             if (!File.Exists(partial) || new FileInfo(partial).Length == 0)
                 throw new InvalidOperationException("FFmpeg 没有生成输出文件。");
             token.ThrowIfCancellationRequested();
             string name = !hasVideo && audioName is not null ? audioName : Path.GetFileNameWithoutExtension(output);
+            if (debug?.Enabled == true)
+                debug.Write("Media", $"媒体已写入缓存 · 字节={new FileInfo(partial).Length} · 输出扩展名={Path.GetExtension(output)}。");
             return MediaOutput.Publish(partial, directory, name, Path.GetExtension(output));
         }
         catch (MediaPublishException) { preservePartial = true; throw; }
@@ -460,6 +481,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(15));
         using var response = await GetHttpMediaAsync(source, timeout.Token, headers).ConfigureAwait(false);
+        debug?.Write("Download", $"HTTP 响应 · 状态码={(int)response.StatusCode} · 内容长度={response.Content.Headers.ContentLength}。");
         response.EnsureSuccessStatusCode();
         string mime = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant() ?? "";
         Uri finalUri = response.RequestMessage?.RequestUri ?? source;
@@ -523,6 +545,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
                 throw new IOException("下载字节数与服务器声明的大小不一致。");
             progress?.Report(new MediaProgress(Bytes: received, TotalBytes: expected));
             token.ThrowIfCancellationRequested();
+            debug?.Write("Download", $"HTTP 下载完成 · 字节={received} · 纯音频={audio} · 输出扩展名={safeExtension}。");
             return MediaOutput.Publish(partial, Path.GetDirectoryName(output)!, Path.GetFileNameWithoutExtension(output), Path.GetExtension(output));
         }
         catch (MediaPublishException) { preservePartial = true; throw; }

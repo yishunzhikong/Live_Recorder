@@ -155,7 +155,7 @@ public sealed partial class MediaService
         Uri? playlistSource = selection?.VariantPlaylist ?? selection?.Source ?? source;
         int? program = selection?.Program;
         HttpMediaState? initialState = http
-            ? await InspectHttpMediaAsync(playlistSource!, token, headers).ConfigureAwait(false) : null;
+            ? await InspectHttpMediaAsync(playlistSource!, token, headers, debug).ConfigureAwait(false) : null;
         if (selection?.IsHls != true)
             ApplyVariant(initialState);
         bool hls = http && (selection?.IsHls == true || initialState?.HlsSegments is not null || IsPlaylistPath(source!.AbsolutePath));
@@ -163,6 +163,7 @@ public sealed partial class MediaService
         bool paceRecording = http && (initialState?.HasFixedDuration == true && (hls || live != true) ||
             initialState is null && live == false);
         TimeSpan mediaStall = RecordingStallThreshold(stall, initialState);
+        debug?.Write("Recording", $"开始录制 · 协议={source?.Scheme ?? "SDP"} · HLS={hls} · 按实时速率读取={paceRecording} · 分片={options.PartDurationSeconds} 秒 · 断流阈值={mediaStall.TotalSeconds:0.##} 秒 · 重试间隔={retryDelay.TotalSeconds:0.##} 秒 · 重连上限={timing.MaxWaitMinutes} 分钟。");
         IReadOnlySet<Uri>? previousHlsRequests = null;
         long? previousHlsSequence = null;
         // 使用单调时钟计算等待上限，系统时间变动不会延长重连期限。
@@ -194,7 +195,7 @@ public sealed partial class MediaService
                 {
                     using var check = CancellationTokenSource.CreateLinkedTokenSource(token);
                     check.CancelAfter(remaining);
-                    HttpMediaState? current = await InspectHttpMediaAsync(playlistSource!, check.Token, headers).ConfigureAwait(false);
+                    HttpMediaState? current = await InspectHttpMediaAsync(playlistSource!, check.Token, headers, debug).ConfigureAwait(false);
                     if (initialState is null && current is not null)
                     {
                         if (selection?.IsHls != true)
@@ -214,6 +215,7 @@ public sealed partial class MediaService
                         hlsStart = FindHlsResumeIndex(current, previousHlsRequests, previousHlsSequence);
                         if (hlsStart == segments.Count)
                         {
+                            debug?.Write("Recording", $"HLS 清单尚无新分片 · 序号={current.HlsSequence} · 已结束={current.HasFixedDuration}。");
                             if (current.HasFixedDuration)
                                 break;
                             continue;
@@ -254,6 +256,7 @@ public sealed partial class MediaService
                 break;
             }
             RecordingAttempt attempt;
+            debug?.Write("Recording", $"启动录制尝试 · 是否重连={outage.HasValue} · HLS 起始索引={hlsStart} · 节目={program} · 首包等待={Math.Min(startupWait.TotalSeconds, attemptStall.TotalSeconds):0.##} 秒。");
             string? tailPlaylist = null;
             try
             {
@@ -275,6 +278,7 @@ public sealed partial class MediaService
                     File.Delete(tailPlaylist);
             }
             hls |= attempt.Hls;
+            debug?.Write("Recording", $"录制尝试结束 · 分片={attempt.Folder?.PartCount ?? 0} · 断流超时={attempt.Stalled} · 错误类型={attempt.Error?.GetType().Name ?? "无"} · 已取消={token.IsCancellationRequested}。");
             liveHls |= attempt.Hls && attempt.DurationUnknown;
             if (attempt.Folder is { } recorded)
             {
@@ -296,6 +300,7 @@ public sealed partial class MediaService
             bool expectLive = live == true || !http || liveHls || (live is null && attempt.DurationUnknown);
             bool recoverable = attempt.Stalled ||
                 (attempt.Error is FfmpegFailureException failure && IsRecoverable(failure, folders.Count > 0, expectLive || hls));
+            debug?.Write("Recording", $"判定录制后续操作 · 视为直播={expectLive} · 可恢复={recoverable} · 已保存目录={folders.Count}。");
             if (attempt.Error is { } error && !recoverable)
             {
                 terminal = error.Message;
@@ -309,7 +314,7 @@ public sealed partial class MediaService
             var (stoppedAt, stoppedTimestamp) = attempt.StallDetected ?? (DateTimeOffset.Now, Stopwatch.GetTimestamp());
             if (http && (hls || (attempt.Error is null && expectLive)))
             {
-                HttpMediaState? state = await InspectHttpMediaAsync(playlistSource!, token, headers).ConfigureAwait(false);
+                HttpMediaState? state = await InspectHttpMediaAsync(playlistSource!, token, headers, debug).ConfigureAwait(false);
                 if (state?.HlsSegments is { Count: > 0 } segments)
                 {
                     hls = true;
@@ -346,6 +351,7 @@ public sealed partial class MediaService
                 token.ThrowIfCancellationRequested();
             throw new InvalidOperationException(terminal ?? "录制结束，没有收到可用媒体数据。");
         }
+        debug?.Write("Recording", $"录制会话完成 · 目录数={folders.Count} · 分片总数={folders.Sum(folder => folder.PartCount)} · 存在中断={terminal is not null}。");
         return new RecordingResult(folders.AsReadOnly(), terminal);
 
         // 一次录制固定使用开始时选中的清晰度，重连只重新读取该变体的分片清单。
@@ -428,8 +434,9 @@ public sealed partial class MediaService
                 {
                     bool matroska = extension == RecordingParts.MatroskaExtension;
                     statistics = options.ReportStreamInfo && progress is not null
-                        ? new RecordingStatistics(extension, progress, convertVideo, convertAudio) : null;
+                        ? new RecordingStatistics(extension, progress, convertVideo, convertAudio, debug) : null;
                     statistics?.Start();
+                    debug?.Write("Recording", $"配置 FFmpeg 分片 · 扩展名={extension} · 视频转码={convertVideo} · 音频转码={convertAudio}。");
                     // TS 连续读入合并。Matroska 分片独立封装，时间戳从各自起点开始。
                     string pattern = Path.Combine(staging.Replace("%", "%%", StringComparison.Ordinal), "part-%08d" + extension);
                     watch.CancelAfter(startupWait);
@@ -440,7 +447,8 @@ public sealed partial class MediaService
                             "-segment_time", options.PartDurationSeconds.ToString(CultureInfo.InvariantCulture),
                             "-segment_start_number", "1", "-reset_timestamps", matroska ? "1" : "0", pattern],
                         statistics ?? progress, watch.Token,
-                        finishOnCancellation: true, readDiagnostic: ReadRecordingDiagnostic, traceTimestamps: statistics is not null);
+                        finishOnCancellation: true, readDiagnostic: ReadRecordingDiagnostic, traceTimestamps: statistics is not null,
+                        debug: debug);
                     await RecordingParts.PublishAsync(recording, staging, extension, BeginFolder, watch, progress, () =>
                     {
                         if (!watch.IsCancellationRequested)
@@ -454,6 +462,7 @@ public sealed partial class MediaService
                 }
                 catch (RecordingMuxException ex)
                 {
+                    debug?.Write("Recording", $"封装拒绝轨道 · 扩展名={extension} · 轨道={(ex.Video ? "视频" : "音频")}，准备切换封装或转码。");
                     foreach (string part in Directory.EnumerateFiles(staging, "part-*" + extension))
                         File.Delete(part);
                     if (recordingDirectory is { } rejected)

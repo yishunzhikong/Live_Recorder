@@ -323,6 +323,7 @@ public sealed partial class MainWindow
             var next = new LoggingSettings(choices[levels.SelectedIndex], (int)size.Value, (int)count.Value);
             PortableStorage.Configuration.Update(current => current with { Logging = next });
             PortableStorage.Log.Configure(next);
+            _debug.Write("Configuration", $"已应用日志设置 · 档位={next.Level} · 单片={next.FileSizeMb} MB · 保留={next.FileCount}。");
         }
     });
 

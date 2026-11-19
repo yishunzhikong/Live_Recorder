@@ -28,6 +28,7 @@ public sealed partial class MediaPanel : UserControl
     private WindowId _windowId;
     private nint _handle;
     private int _logWindowId;
+    private DebugTrace? _debug;
     private Func<ContentDialog, Task<ContentDialogResult>> _showDialogAsync = null!;
     private string _defaultOutput = "";
     private CancellationTokenSource? _operation;
@@ -70,6 +71,7 @@ public sealed partial class MediaPanel : UserControl
         _windowId = windowId;
         _handle = handle;
         _logWindowId = logWindowId;
+        _debug = new DebugTrace(PortableStorage.Log, logWindowId);
         _defaultOutput = defaultOutput;
         _showDialogAsync = showDialogAsync;
     }
@@ -80,7 +82,7 @@ public sealed partial class MediaPanel : UserControl
     internal void SetTools(string? ffmpeg, WebVideoAnalyzer analyzer)
     {
         _ffmpegPath = ffmpeg;
-        _media = new MediaService(ffmpeg, PortableStorage.CacheDirectory);
+        _media = new MediaService(ffmpeg, PortableStorage.CacheDirectory, _debug);
         _webAnalyzer = analyzer;
     }
 
@@ -120,8 +122,12 @@ public sealed partial class MediaPanel : UserControl
         try
         {
             if (_input == input && _selectedNetwork is { } cached)
+            {
+                _debug?.Write("Media", "复用已锁定的 HLS 入口。");
                 return cached;
-            var selection = await MediaService.SelectNetworkMediaAsync(input.Source, token, input.WebFormat?.Headers);
+            }
+            var selection = await MediaService.SelectNetworkMediaAsync(input.Source, token, input.WebFormat?.Headers, _debug);
+            _debug?.Write("Media", $"选流结束 · 协议={input.Source.Scheme} · HLS={selection.IsHls} · 固定时长={selection.HasFixedDuration} · 节目={selection.Program}。");
             if (_input == input && selection.VariantPlaylist is not null)
             {
                 _selectedNetwork = selection;
@@ -324,6 +330,7 @@ public sealed partial class MediaPanel : UserControl
         _operation!.Dispose();
         // 停止录制后仍可合并已保存的分片，因此合并阶段使用新的取消令牌。
         _operation = new CancellationTokenSource();
+        _debug?.Write("Merge", $"开始合并录制结果 · 目录数={folders.Count} · 重新编码={choice == ContentDialogResult.Primary}。");
         CancellationToken token = _operation.Token;
         StartStage("合并中");
         int succeeded = 0;
@@ -379,6 +386,8 @@ public sealed partial class MediaPanel : UserControl
         if (IsBusy || _closeWhenIdle)
             return;
         _operation = new CancellationTokenSource();
+        long started = Stopwatch.GetTimestamp();
+        _debug?.Write("Task", $"开始任务 · 阶段={title} · 允许并行预览={allowNetworkPreview}。");
         SetControlsEnabled(false, allowNetworkPreview);
         StartStage(title);
         try { await action(_operation.Token); }
@@ -392,6 +401,7 @@ public sealed partial class MediaPanel : UserControl
         catch (Exception ex) { SetStatus("任务失败", ex.Message, LogLevel.Error, ex); }
         finally
         {
+            _debug?.Write("Task", $"结束任务 · 阶段={title} · 最终状态={StatusTitle.Text} · 已取消={_operation.IsCancellationRequested} · 耗时={Stopwatch.GetElapsedTime(started).TotalSeconds:F2} 秒。");
             StopProgressUpdates();
             _operation.Dispose();
             _operation = null;
@@ -424,6 +434,7 @@ public sealed partial class MediaPanel : UserControl
         RecordingMediaProgress? recording = null;
         long? writtenBytes = null;
         TimeSpan mediaTime = TimeSpan.Zero;
+        long lastDebugProgress = Stopwatch.GetTimestamp();
         var writeRate = new AverageRecordingRate();
         var videoRate = new RealtimeTrackRate();
         var audioRate = new RealtimeTrackRate();
@@ -494,6 +505,11 @@ public sealed partial class MediaPanel : UserControl
             {
                 mediaTime = duration;
                 time = $"媒体时长 {(int)duration.TotalHours:D2}:{duration.Minutes:D2}:{duration.Seconds:D2}";
+            }
+            if (_debug?.Enabled == true && Stopwatch.GetElapsedTime(lastDebugProgress) >= TimeSpan.FromSeconds(10))
+            {
+                lastDebugProgress = Stopwatch.GetTimestamp();
+                _debug.Write("Task", $"进度快照 · 阶段={StatusTitle.Text} · 媒体时间={mediaTime.TotalSeconds:F1} 秒 · 已写入={writtenBytes} 字节 · 已保存={parts} · 视频包字节={recording?.VideoBytes} · 音频包字节={recording?.AudioBytes}。");
             }
             string detail = string.Join("  ·  ", new[] { time, parts, size }.OfType<string>());
             if (!_waitingForRecordingReconnect && StatusDetail.Text != detail)

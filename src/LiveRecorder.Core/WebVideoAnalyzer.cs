@@ -22,7 +22,7 @@ public sealed record WebVideoAnalysis(string Title, IReadOnlyList<WebVideoLink> 
 /// <param name="executable">yt-dlp 可执行文件路径。</param>
 /// <param name="deno">提供 JavaScript 运行环境的 Deno 可执行文件路径。</param>
 /// <param name="cacheDirectory">便携工具缓存目录。</param>
-public sealed class WebVideoAnalyzer(string? executable, string deno, string cacheDirectory)
+public sealed class WebVideoAnalyzer(string? executable, string deno, string cacheDirectory, DebugTrace? debug = null)
 {
     /// <summary>从网页提取用于预览或下载的 HTTP(S) 直链。</summary>
     /// <param name="address">包含媒体的网页地址。</param>
@@ -41,13 +41,18 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         timeout.CancelAfter(TimeSpan.FromSeconds(75));
         using var process = new Process { StartInfo = CreateStartInfo(["--skip-download", "--dump-single-json"], address) };
         Start(process);
+        long started = Stopwatch.GetTimestamp();
+        debug?.Write("yt-dlp", $"开始提取网页媒体格式 · 子进程 PID={process.Id} · Deno 可用={File.Exists(deno)} · 超时=75 秒。");
 
         Task<JsonDocument> output = JsonDocument.ParseAsync(process.StandardOutput.BaseStream, cancellationToken: timeout.Token);
         Task<string> errors = ToolProcess.ReadDiagnosticTailAsync(process.StandardError);
         try
         {
             await WaitForSuccessAsync(process, errors, "yt-dlp 无法分析此网页。", timeout.Token).ConfigureAwait(false);
-            return Parse((await output.ConfigureAwait(false)).RootElement, address);
+            WebVideoAnalysis analysis = Parse((await output.ConfigureAwait(false)).RootElement, address);
+            if (debug?.Enabled == true)
+                debug.Write("yt-dlp", $"格式提取完成 · 格式数={analysis.Links.Count} · 音频格式数={analysis.Links.Count(link => link.AudioOnly)} · 含直播格式={analysis.Links.Any(link => link.IsLive)} · 耗时={Stopwatch.GetElapsedTime(started).TotalSeconds:F2} 秒。");
+            return analysis;
         }
         finally
         {
@@ -56,6 +61,8 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
             catch (JsonException) { /* yt-dlp errors may leave stdout empty or incomplete. */ }
             catch (OperationCanceledException) when (timeout.IsCancellationRequested) { }
             await errors.ConfigureAwait(false);
+            if (debug?.Enabled == true && process.HasExited)
+                debug.Write("yt-dlp", $"格式提取子进程已退出 · 状态码={process.ExitCode} · 已取消={token.IsCancellationRequested} · 已超时={timeout.IsCancellationRequested && !token.IsCancellationRequested}。");
         }
     }
 
@@ -77,6 +84,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         };
         Start(process);
 
+        debug?.Write("yt-dlp", $"开始下载网页音轨 · 子进程 PID={process.Id} · 直播={link.IsLive} · 输出=M4A。");
         Task output = process.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
         Task<string> errors = ToolProcess.ReadDiagnosticTailAsync(process.StandardError);
         try
@@ -86,6 +94,8 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
             if (!File.Exists(path) || new FileInfo(path).Length == 0)
                 throw new InvalidDataException("yt-dlp 没有生成可播放的 M4A 音频。");
             token.ThrowIfCancellationRequested();
+            if (debug?.Enabled == true)
+                debug.Write("yt-dlp", $"网页音轨下载结束 · 状态码={process.ExitCode} · 字节={new FileInfo(path).Length}。");
             return path;
         }
         finally
@@ -115,7 +125,8 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
             link.PageUrl);
         start.Environment["PATH"] = Path.GetDirectoryName(executable) + Path.PathSeparator
             + Environment.GetEnvironmentVariable("PATH");
-        return PreviewStream.Start(start, "yt-dlp 无法在线播放所选音频。", token);
+        debug?.Write("yt-dlp", $"准备网页音轨预览 · 直播={link.IsLive} · 管道=MPEG-TS/AAC。");
+        return PreviewStream.Start(start, "yt-dlp 无法在线播放所选音频。", token, debug);
     }
 
     // 用解析时选中的格式 ID 重新从原网页取流，避免取到其他音轨。
