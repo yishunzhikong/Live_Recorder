@@ -49,7 +49,8 @@ internal sealed class LogLevelConverter : JsonConverter<LogLevel>
 }
 
 public sealed record MediaSettings(string? OutputDirectory = null, int Mode = 0, VideoEncoder Encoder = VideoEncoder.Software,
-    DeinterlaceMode Deinterlace = DeinterlaceMode.Automatic, int PartSizeMb = 1, bool Reencode = false,
+    DeinterlaceMode Deinterlace = DeinterlaceMode.Automatic, int PartDurationSeconds = RecordingOptions.DefaultPartDurationSeconds,
+    bool Reencode = false,
     int Volume = 100, bool Muted = false)
 {
     public EncodingSettings Encoding { get; init; } = new();
@@ -205,7 +206,7 @@ public sealed class PortableConfiguration : IDisposable
                 Mode = Math.Clamp(media.Mode, 0, 1),
                 Encoder = Enum.IsDefined(media.Encoder) ? media.Encoder : VideoEncoder.Software,
                 Deinterlace = Enum.IsDefined(media.Deinterlace) ? media.Deinterlace : DeinterlaceMode.Automatic,
-                PartSizeMb = Math.Clamp(media.PartSizeMb, 1, 1024),
+                PartDurationSeconds = media.PartDurationSeconds > 0 ? media.PartDurationSeconds : RecordingOptions.DefaultPartDurationSeconds,
                 Volume = Math.Clamp(media.Volume, 0, 100),
                 Encoding = (media.Encoding ?? new()).Normalize(),
                 Reconnect = (media.Reconnect ?? new()).Normalize()

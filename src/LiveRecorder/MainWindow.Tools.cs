@@ -19,31 +19,30 @@ public sealed partial class MainWindow
         if (tool == MediaTool.Ffmpeg)
         {
             _ffmpegPath = installed.ActiveExecutable;
-            _media = new MediaService(_ffmpegPath, PortableStorage.CacheDirectory);
         }
         else
         {
             _webAnalyzer = new WebVideoAnalyzer(installed.ActiveExecutable, _toolUpdater.DenoPath, PortableStorage.CacheDirectory);
         }
+        MediaPane.SetTools(_ffmpegPath, _webAnalyzer);
     }
 
-    private (MediaService Media, WebVideoAnalyzer Web, string? FfmpegPath) ResolveMediaTools()
+    private (WebVideoAnalyzer Web, string? FfmpegPath) ResolveMediaTools()
     {
         string? ffmpeg = _toolUpdater.GetExecutable(MediaTool.Ffmpeg);
         string? ytDlp = _toolUpdater.GetExecutable(MediaTool.YtDlp);
-        return (new MediaService(ffmpeg, PortableStorage.CacheDirectory),
-            new WebVideoAnalyzer(ytDlp, _toolUpdater.DenoPath, PortableStorage.CacheDirectory), ffmpeg);
+        return (new WebVideoAnalyzer(ytDlp, _toolUpdater.DenoPath, PortableStorage.CacheDirectory), ffmpeg);
     }
 
     private async void UpgradeFfmpeg_Click(object sender, RoutedEventArgs e) => await UpgradeToolAsync(MediaTool.Ffmpeg, "FFmpeg");
 
     private async void UpgradeYtDlp_Click(object sender, RoutedEventArgs e) => await UpgradeToolAsync(MediaTool.YtDlp, "yt-dlp");
 
-    private async void ManageToolVersions_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
+    private async void ManageToolVersions_Click(object sender, RoutedEventArgs e) => await MediaPane.HandlePickerAsync(async () =>
     {
-        if (_operation is not null || _toolVersionsDialog is not null || _closeWhenIdle)
+        if (MediaPane.IsBusy || _toolVersionsDialog is not null || _closeWhenIdle)
             return;
-        var dialog = new ToolVersionsDialog(_toolUpdater, ReloadMediaTool, StopPreviewAsync, _logWindowId)
+        var dialog = new ToolVersionsDialog(_toolUpdater, ReloadMediaTool, MediaPane.StopPreviewAsync, _logWindowId)
         {
             XamlRoot = ((FrameworkElement)Content).XamlRoot
         };
@@ -56,18 +55,18 @@ public sealed partial class MainWindow
         }
     });
 
-    private Task UpgradeToolAsync(MediaTool tool, string name) => RunAsync($"正在检查 {name}", async token =>
+    private Task UpgradeToolAsync(MediaTool tool, string name) => MediaPane.RunAsync($"正在检查 {name}", async token =>
     {
-        SetStatus($"正在检查 {name}", "正在通过 GitHub API 核对当前版本和上游稳定版。");
+        MediaPane.SetStatus($"正在检查 {name}", "正在通过 GitHub API 核对当前版本和上游稳定版。");
         bool finished = false;
         ToolUpdateResult result;
         try
         {
-            result = await _toolUpdater.UpdateAsync(tool, CreateProgress(), token, () => DispatcherQueue.TryEnqueue(() =>
+            result = await _toolUpdater.UpdateAsync(tool, MediaPane.CreateProgress(), token, () => DispatcherQueue.TryEnqueue(() =>
             {
                 // 排队到界面线程的回退提示可能晚于任务结果，此时保留最终状态。
                 if (!finished && !token.IsCancellationRequested)
-                    SetStatus($"正在检查 {name}", "GitHub API 查询失败（HTTP 403），正在使用官方发布页查询。", LogLevel.Warning);
+                    MediaPane.SetStatus($"正在检查 {name}", "GitHub API 查询失败（HTTP 403），正在使用官方发布页查询。", LogLevel.Warning);
             }));
         }
         finally
@@ -81,13 +80,13 @@ public sealed partial class MainWindow
         if (result.Updated)
         {
             if (result.Before is null)
-                SetStatus($"{name} 已安装", $"{source}版本 {result.After}，SHA-256 与运行版本校验通过。{active}");
+                MediaPane.SetStatus($"{name} 已安装", $"{source}版本 {result.After}，SHA-256 与运行版本校验通过。{active}");
             else
-                SetStatus($"{name} 已升级", $"{source}{result.Before} → {result.After}，SHA-256 与运行版本校验通过。{active}");
+                MediaPane.SetStatus($"{name} 已升级", $"{source}{result.Before} → {result.After}，SHA-256 与运行版本校验通过。{active}");
         }
         else
         {
-            SetStatus($"{name} 无需升级", $"{source}本地最新版本为 {result.After}，已核对上游稳定版。{active}");
+            MediaPane.SetStatus($"{name} 无需升级", $"{source}本地最新版本为 {result.After}，已核对上游稳定版。{active}");
         }
     });
 }

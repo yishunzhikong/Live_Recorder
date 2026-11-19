@@ -11,7 +11,7 @@ using LogLevel = LiveRecorder.Core.LogLevel;
 namespace LiveRecorder;
 
 // 管理 LibVLC 预览、播放控件，以及直接播放和子进程供流之间的切换。
-public sealed partial class MainWindow
+public sealed partial class MediaPanel
 {
     private const string PreviewIdle = "选择预览链接或打开本地视频。";
     private readonly TaskCompletionSource<string[]> _videoSurface = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -29,6 +29,7 @@ public sealed partial class MainWindow
         public Uri? NetworkSource { get; } = networkSource;
         public WebVideoLink? WebFormat { get; } = webFormat;
         public bool HasFixedDuration { get; set; } = networkSource is null && webFormat is null;
+        public MediaService.NetworkMediaSelection? Selection { get; set; }
         public CancellationTokenSource Cancellation { get; } = new();
         public Task Startup { get; set; } = Task.CompletedTask;
         public Media? Media { get; set; }
@@ -54,21 +55,14 @@ public sealed partial class MainWindow
         PreviewSeek.AddHandler(UIElement.PointerReleasedEvent, endDrag, true);
         PreviewSeek.AddHandler(UIElement.PointerCanceledEvent, endDrag, true);
         PreviewSeek.AddHandler(UIElement.PointerCaptureLostEvent, endDrag, true);
-        Closed += (_, _) => _vlc?.Dispose();
     }
 
     private void PreviewPlayer_Initialized(object sender, InitializedEventArgs e) => _videoSurface.TrySetResult(e.SwapChainOptions);
 
     private async void PreviewLink_Click(object sender, RoutedEventArgs e)
     {
-        if (SelectedWebAudio is { } audio)
-        {
-            await PreviewWebAudioAsync(audio);
-            return;
-        }
-
-        Uri source;
-        try { source = SelectedMediaSource(); }
+        Input input;
+        try { input = RequireSource(); }
         catch (ArgumentException ex)
         {
             if (_preview is null)
@@ -79,18 +73,28 @@ public sealed partial class MainWindow
             return;
         }
 
-        WebVideoLink? format = SelectedWebFormat;
+        if (input.WebFormat is { AudioOnly: true } audio)
+        {
+            await PreviewWebAudioAsync(audio);
+            return;
+        }
+        Uri source = input.Source;
+        WebVideoLink? format = input.WebFormat;
         MediaRequestHeaders? headers = format?.Headers;
         await OpenPreviewAsync($"网络预览 · {source.Scheme.ToUpperInvariant()}", source, (vlc, session) =>
         {
-            // VLC's HTTP input supports User-Agent and Referer but cannot set Origin.
-            if (headers?.Origin is not null || source.Scheme is "rtmp" or "rtmps" or "rtmpt" or "rtmpts" or "rtsps")
-                return session.FromStream(vlc, _media.OpenNetworkPreview(source, session.Cancellation.Token, headers), ":demux=ts");
+            MediaService.NetworkMediaSelection? selection = session.Selection;
+            Uri input = selection?.Source ?? source;
+            // 独立音视频轨道由 FFmpeg 按节目配对。VLC 的 HTTP 输入也无法发送 Origin。
+            if ((selection?.Program is not null && File.Exists(_ffmpegPath)) || headers?.Origin is not null ||
+                source.Scheme is "rtmp" or "rtmps" or "rtmpt" or "rtmpts" or "rtsps")
+                return session.FromStream(vlc, _media.OpenNetworkPreview(input, session.Cancellation.Token, headers,
+                    hls: selection?.IsHls == true, program: selection?.Program), ":demux=ts");
             // VLC treats the address after @ as the local RTP/UDP receive address.
             string location = (source.Scheme is "rtp" or "udp") && source.UserInfo.Length == 0
-                ? $"{source.Scheme}://@{source.Authority}" : source.AbsoluteUri;
+                ? $"{source.Scheme}://@{source.Authority}" : input.AbsoluteUri;
             return CreateNetworkMedia(vlc, location, headers);
-        }, format);
+        }, format, input: input);
     }
 
     private Task PreviewWebAudioAsync(WebVideoLink audio)
@@ -143,9 +147,10 @@ public sealed partial class MainWindow
     /// <param name="loadMedia">使用 LibVLC 和新会话构造媒体对象的回调。</param>
     /// <param name="format">可选的 yt-dlp 格式与请求头信息。</param>
     /// <param name="fallback">可选的操作，在当前媒体尚未开始播放便失败时执行。</param>
+    /// <param name="input">可选的当前网络媒体快照，用于共享 HLS 选流。</param>
     /// <returns>完成启动处理的任务。任务返回时播放器可能仍在缓冲。</returns>
     private async Task OpenPreviewAsync(string title, Uri? networkSource, Func<LibVLC, PreviewSession, Media> loadMedia,
-        WebVideoLink? format = null, Func<Task>? fallback = null)
+        WebVideoLink? format = null, Func<Task>? fallback = null, Input? input = null)
     {
         if (_closeWhenIdle)
             return;
@@ -154,7 +159,7 @@ public sealed partial class MainWindow
         Task previous = StopPreviewAsync();
         var session = new PreviewSession(networkSource, format)
         {
-            Replay = () => OpenPreviewAsync(title, networkSource, loadMedia, format, fallback),
+            Replay = () => OpenPreviewAsync(title, networkSource, loadMedia, format, fallback, input),
             Fallback = fallback
         };
         _preview = session;
@@ -176,6 +181,11 @@ public sealed partial class MainWindow
             await Task.Yield();
             await previous;
             CancellationToken token = session.Cancellation.Token;
+            if (input is not null)
+            {
+                session.Selection = await SelectInputAsync(input, token);
+                session.HasFixedDuration = session.Selection?.HasFixedDuration == true && format?.IsLive != true;
+            }
             string[] display = await _videoSurface.Task.WaitAsync(TimeSpan.FromSeconds(8), token);
             token.ThrowIfCancellationRequested();
             _vlc ??= new LibVLC([.. display, "--ignore-config", "--no-plugins-cache", "--no-video-title-show"]);
@@ -194,7 +204,7 @@ public sealed partial class MainWindow
                 throw new InvalidOperationException("VLC 无法开始播放此媒体。");
             if (session.Producer is { } producer)
                 _ = ObserveStreamAsync(session, producer.Completion);
-            else if (networkSource is not null && format?.IsLive != true)
+            else if (session.Selection is null && networkSource is not null && format?.IsLive != true)
                 _ = CheckPreviewDurationAsync(session, networkSource, token);
             // 播放请求成功后仍需监控 VLC 是否真正进入播放状态。
             _ = WatchPreviewStartupAsync(session, token);
@@ -394,7 +404,7 @@ public sealed partial class MainWindow
 
     /// <summary>解除当前预览与界面的关联并开始释放其资源。</summary>
     /// <returns>等待预览资源释放的任务。若已开始清理则返回正在运行的清理任务。</returns>
-    private Task StopPreviewAsync()
+    internal Task StopPreviewAsync()
     {
         if (_preview is not { } session)
             return _previewCleanup;

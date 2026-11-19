@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml;
 
 namespace LiveRecorder.Core;
@@ -15,8 +16,10 @@ public enum DeinterlaceMode { Automatic, Always, Off }
 /// <param name="TotalBytes">已知的总字节数。</param>
 /// <param name="Parts">已保存的分片数。</param>
 /// <param name="MediaTime">已处理的媒体时长。</param>
+/// <param name="Recording">录制输出参数和分轨包计数。</param>
 /// <remarks>空字段表示此次更新未提供对应的指标。</remarks>
-public sealed record MediaProgress(long? Bytes = null, long? TotalBytes = null, int? Parts = null, TimeSpan? MediaTime = null);
+public sealed record MediaProgress(long? Bytes = null, long? TotalBytes = null, int? Parts = null, TimeSpan? MediaTime = null,
+    RecordingMediaProgress? Recording = null);
 /// <summary>提供媒体探测、下载、录制、预览输入和本地编辑。</summary>
 /// <param name="ffmpeg">选用的 FFmpeg 路径。需要 FFmpeg 的操作会检查该路径。</param>
 /// <param name="cacheDirectory">便携缓存目录，用于未发布的媒体输出。</param>
@@ -52,10 +55,36 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     public static async Task<bool> HasFixedPreviewDurationAsync(Uri source, CancellationToken token, MediaRequestHeaders? headers = null) =>
         (await InspectHttpMediaAsync(source, token, headers).ConfigureAwait(false))?.HasFixedDuration == true;
 
+    /// <summary>预览、录制和下载使用的网络媒体入口。</summary>
+    /// <param name="Source">实际交给播放器或 FFmpeg 的地址。</param>
+    /// <param name="IsHls">是否已识别为 HLS。</param>
+    /// <param name="Program">保留 HLS 主清单时选用的 FFmpeg 节目编号。</param>
+    /// <param name="HasFixedDuration">是否确认媒体已经具有固定时长。</param>
+    /// <param name="VariantPlaylist">选中变体的分片清单，供录制重连使用。</param>
+    public sealed record NetworkMediaSelection(Uri Source, bool IsHls, int? Program, bool HasFixedDuration, Uri? VariantPlaylist = null);
+
+    /// <summary>解析 HLS 清晰度并确认媒体长度，供网络预览使用。</summary>
+    /// <param name="source">原始媒体地址。</param>
+    /// <param name="token">用于中止探测的令牌。</param>
+    /// <param name="headers">可选的媒体请求头。</param>
+    /// <returns>选中的入口。探测失败时保留原始地址。</returns>
+    public static async Task<NetworkMediaSelection> SelectNetworkMediaAsync(Uri source, CancellationToken token,
+        MediaRequestHeaders? headers = null)
+    {
+        HttpMediaState? state = await InspectHttpMediaAsync(source, token, headers).ConfigureAwait(false);
+        token.ThrowIfCancellationRequested();
+        return new(state?.VariantSource ?? source, state?.HlsSegments is not null, state?.Program,
+            state?.HasFixedDuration == true, state?.VariantPlaylist);
+    }
+
     // 同一份 HTTP 探测结果用于判断预览长度和定位录制重连后的 HLS 分片。
     private sealed record HlsSegment(Uri Uri, decimal? Duration);
     private sealed record HttpMediaState(bool HasFixedDuration, long HlsSequence = 0, IReadOnlyList<HlsSegment>? HlsSegments = null,
-        bool CanTrimHls = false, int HlsTargetDurationSeconds = 0);
+        bool CanTrimHls = false, int HlsTargetDurationSeconds = 0, Uri? VariantSource = null, Uri? VariantPlaylist = null,
+        int? Program = null);
+
+    private sealed record HlsVariant(Uri Playlist, long Pixels, long Bandwidth, string? AudioGroup, string? VideoGroup, int Program);
+    private static readonly Regex HlsAttribute = new(@"(?:^|,)\s*([A-Z0-9-]+)=(?:""([^""]*)""|([^,]*))", RegexOptions.CultureInvariant);
 
     private static async Task<HttpMediaState?> InspectHttpMediaAsync(Uri source, CancellationToken token, MediaRequestHeaders? headers)
     {
@@ -104,8 +133,9 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         }
 
         using var lines = new StringReader(Encoding.UTF8.GetString(manifest, 0, count));
-        Uri? variant = null;
-        bool variantPath = false;
+        var variants = new List<HlsVariant>();
+        var externalGroups = new HashSet<(string Type, string Group)>();
+        string? variantAttributes = null;
         bool ended = false;
         bool canTrim = true;
         long sequence = 0;
@@ -128,12 +158,19 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
                     CultureInfo.InvariantCulture, out decimal seconds) ? seconds : null;
             }
             else if (line.StartsWith("#EXT-X-STREAM-INF:", StringComparison.Ordinal))
-                variantPath = true;
-            else if (variantPath && line.Length != 0 && !line.StartsWith('#'))
+                variantAttributes = line["#EXT-X-STREAM-INF:".Length..];
+            else if (line.StartsWith("#EXT-X-MEDIA:", StringComparison.Ordinal))
             {
-                if (variant is null)
-                    Uri.TryCreate(location, line, out variant);
-                variantPath = false;
+                var attributes = ReadHlsAttributes(line["#EXT-X-MEDIA:".Length..]);
+                if (attributes.TryGetValue("TYPE", out string? type) && type is "AUDIO" or "VIDEO" &&
+                    attributes.TryGetValue("GROUP-ID", out string? group) && attributes.ContainsKey("URI"))
+                    externalGroups.Add((type, group));
+            }
+            else if (variantAttributes is not null && line.Length != 0 && !line.StartsWith('#'))
+            {
+                if (Uri.TryCreate(location, line, out Uri? playlist) && playlist.Scheme is "http" or "https")
+                    variants.Add(ReadVariant(playlist, variantAttributes, variants.Count));
+                variantAttributes = null;
             }
             else if (line.Length != 0 && !line.StartsWith('#'))
             {
@@ -148,14 +185,52 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
                 canTrim = false;
         }
         // 主播放列表只有变体入口，需要继续读取变体清单才能判断是否结束。
-        if (variant is not null)
+        if (variants.Count > 0)
         {
-            HttpMediaState? child = await ReadHttpMediaAsync(variant, depth + 1, token, headers).ConfigureAwait(false);
-            return child is null ? null : child with { CanTrimHls = false };
+            HlsVariant selected = variants.OrderByDescending(variant => variant.Pixels)
+                .ThenByDescending(variant => variant.Bandwidth).First();
+            HttpMediaState child = await ReadHttpMediaAsync(selected.Playlist, depth + 1, token, headers).ConfigureAwait(false)
+                ?? new(false, HlsSegments: []);
+            // 有独立轨道组的变体需要保留主清单，以便 FFmpeg 同时读取视频和音频。
+            if (selected.AudioGroup is { } audio && externalGroups.Contains(("AUDIO", audio)) ||
+                selected.VideoGroup is { } video && externalGroups.Contains(("VIDEO", video)))
+                return child with { VariantSource = source, VariantPlaylist = selected.Playlist, Program = selected.Program, CanTrimHls = false };
+            return child with { VariantSource = child.VariantSource ?? selected.Playlist, VariantPlaylist = child.VariantPlaylist ?? selected.Playlist };
         }
         return new(ended, sequence, segments, canTrim &&
             segments.All(segment => segment.Uri.Scheme is "http" or "https" && segment.Duration is > 0 and <= int.MaxValue),
             targetDuration);
+    }
+
+    /// <summary>读取 HLS 变体排序和节目映射所需的属性。</summary>
+    /// <param name="playlist">已按主清单地址解析的变体清单。</param>
+    /// <param name="attributes">变体的 HLS 属性列表。</param>
+    /// <param name="program">FFmpeg 按变体在主清单中的顺序分配的节目编号。</param>
+    /// <returns>包含分辨率、带宽和独立轨道信息的变体。</returns>
+    private static HlsVariant ReadVariant(Uri playlist, string attributes, int program)
+    {
+        var values = ReadHlsAttributes(attributes);
+        long pixels = 0;
+        if (values.TryGetValue("RESOLUTION", out string? resolution))
+        {
+            int separator = resolution.IndexOf('x');
+            if (separator > 0 && int.TryParse(resolution.AsSpan(0, separator), NumberStyles.None, CultureInfo.InvariantCulture, out int width) &&
+                int.TryParse(resolution.AsSpan(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture, out int height))
+                pixels = (long)width * height;
+        }
+        long.TryParse(values.GetValueOrDefault("BANDWIDTH"), NumberStyles.None, CultureInfo.InvariantCulture, out long bandwidth);
+        return new(playlist, pixels, bandwidth, values.GetValueOrDefault("AUDIO"), values.GetValueOrDefault("VIDEO"), program);
+    }
+
+    /// <summary>拆分 HLS 属性列表，保留引号内的逗号。</summary>
+    /// <param name="attributes">HLS 标记冒号后的文本。</param>
+    /// <returns>属性名称及其值。</returns>
+    private static Dictionary<string, string> ReadHlsAttributes(string attributes)
+    {
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (Match attribute in HlsAttribute.Matches(attributes))
+            values[attribute.Groups[1].Value] = attribute.Groups[2].Success ? attribute.Groups[2].Value : attribute.Groups[3].Value.Trim();
+        return values;
     }
 
     private static async Task<HttpResponseMessage> GetHttpMediaAsync(Uri source, CancellationToken token, MediaRequestHeaders? headers)
@@ -171,23 +246,25 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     /// <param name="progress">可选的任务进度接收方。</param>
     /// <param name="token">用于停止任务的取消令牌。</param>
     /// <param name="headers">可选的媒体请求头。</param>
+    /// <param name="selection">同一媒体源已经选定的网络入口。</param>
     /// <returns>成品文件的完整路径。</returns>
     /// <exception cref="MediaPublishException">媒体已经下载完成，但未能移到成品路径。</exception>
     public async Task<string> DownloadAsync(Uri source, string directory, IProgress<MediaProgress>? progress, CancellationToken token,
-        MediaRequestHeaders? headers = null)
+        MediaRequestHeaders? headers = null, NetworkMediaSelection? selection = null)
     {
         bool httpSource = source.Scheme is "http" or "https";
-        if (httpSource && !IsPlaylistPath(source.AbsolutePath))
+        if (httpSource && selection?.IsHls != true && !IsPlaylistPath(source.AbsolutePath))
         {
             string? directFile = await TryDownloadHttpAsync(source, directory, progress, token, headers).ConfigureAwait(false);
             if (directFile is not null)
                 return directFile;
         }
 
+        selection ??= await SelectNetworkMediaAsync(source, token, headers).ConfigureAwait(false);
         DateTime started = DateTime.Now;
         string output = Path.Combine(Path.GetFullPath(directory), TimestampedName("video", started) + ".mkv");
-        return await WriteMediaAsync(output, NetworkInput(source, hls: httpSource, headers: headers), ["-c", "copy"], "matroska", progress, token,
-            audioName: TimestampedName("audio", started)).ConfigureAwait(false);
+        return await WriteMediaAsync(output, NetworkInput(selection.Source, hls: httpSource, headers: headers), ["-c", "copy"], "matroska", progress, token,
+            audioName: TimestampedName("audio", started), program: selection.Program).ConfigureAwait(false);
     }
 
     /// <summary>发布已下载完毕的 M4A 音频。</summary>
@@ -203,13 +280,16 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     /// <param name="source">预览源地址。</param>
     /// <param name="token">用于停止供流进程的令牌。</param>
     /// <param name="headers">可选的媒体请求头。</param>
+    /// <param name="hls">是否已识别为 HLS。</param>
+    /// <param name="program">可选的 FFmpeg 节目编号。</param>
     /// <returns>预览流及其进程监控。调用方负责异步释放。</returns>
     /// <exception cref="InvalidOperationException">FFmpeg 缺失或无法启动。</exception>
-    public PreviewStream OpenNetworkPreview(Uri source, CancellationToken token, MediaRequestHeaders? headers = null)
+    public PreviewStream OpenNetworkPreview(Uri source, CancellationToken token, MediaRequestHeaders? headers = null,
+        bool hls = false, int? program = null)
     {
         var start = ToolProcess.CreateStartInfo(ToolProcess.RequireExecutable(ffmpeg, "FFmpeg"), cacheDirectory);
-        string[] arguments = ["-hide_banner", "-loglevel", "warning", "-nostdin", .. NetworkInput(source, headers: headers),
-            .. MapStreams(), "-c", "copy", "-f", "mpegts", "pipe:1"];
+        string[] arguments = ["-hide_banner", "-loglevel", "warning", "-nostdin", .. NetworkInput(source, hls, headers),
+            .. MapStreams(program), "-c", "copy", "-f", "mpegts", "pipe:1"];
         foreach (string argument in arguments)
             start.ArgumentList.Add(argument);
         return PreviewStream.Start(start, "FFmpeg 无法读取预览媒体流。", token);
@@ -236,7 +316,11 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         if (parts.Length == 0)
             throw new InvalidOperationException("所选文件夹没有可用的 Live Recorder 录制分片。");
         string name = Path.GetFileName(recordingDirectory);
-        string[] input = ["-nostdin", "-f", "mpegts", "-i", "pipe:0"];
+        bool matroska = parts[0].Extension == RecordingParts.MatroskaExtension;
+        string[] input = matroska
+            ? ["-nostdin", "-protocol_whitelist", "file,pipe", "-f", "concat", "-safe", "0", "-i", "pipe:0"]
+            : ["-nostdin", "-f", "mpegts", "-i", "pipe:0"];
+        byte[]? concatList = matroska ? RecordingParts.MatroskaConcatList(parts) : null;
         SourceEncodingInfo source = await ProbeEncodingAsync(input, token, WritePartsAsync).ConfigureAwait(false);
         EncodingSettings encoding = settings ?? DefaultTranscodeSettings;
         string[] codecs = copy ? ["-c", "copy"] : EncodingArguments.Create(encoder, deinterlace, encoding, source);
@@ -244,9 +328,14 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         string output = Path.Combine(Path.GetFullPath(directory), (name.Length == 0 ? "record" : name) + format.Extension);
         return await WriteEditedMediaAsync(output, input, codecs, format.Muxer, progress, token, WritePartsAsync).ConfigureAwait(false);
 
-        // 按分片编号连续写入管道，让 FFmpeg 把它们作为一条传输流读取。
+        // TS 保留连续时间戳。独立 Matroska 文件交由 concat demuxer 逐个读取。
         async Task WritePartsAsync(Stream pipe, CancellationToken ct)
         {
+            if (concatList is not null)
+            {
+                await pipe.WriteAsync(concatList, ct).ConfigureAwait(false);
+                return;
+            }
             foreach (FileInfo part in parts)
             {
                 await using var file = new FileStream(part.FullName, FileMode.Open, FileAccess.Read, FileShare.Read,
@@ -341,7 +430,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     // FFmpeg 先写便携缓存。任务仍有效且文件完整写出后才移到成品路径。
     private async Task<string> WriteMediaAsync(string output, string[] input, string[] codecs, string format,
         IProgress<MediaProgress>? progress, CancellationToken token,
-        Func<Stream, CancellationToken, Task>? writeInput = null, string? audioName = null)
+        Func<Stream, CancellationToken, Task>? writeInput = null, string? audioName = null, int? program = null)
     {
         string directory = Path.GetDirectoryName(output)!;
         Directory.CreateDirectory(cacheDirectory);
@@ -353,7 +442,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
         try
         {
             await FfmpegProcess.RunAsync(ffmpeg, cacheDirectory,
-                ["-n", .. input, .. MapStreams(), .. codecs, .. containerOptions, "-f", format, partial],
+                ["-n", .. input, .. MapStreams(program), .. codecs, .. containerOptions, "-f", format, partial],
                 progress, token, writeInput: writeInput, videoWritten: noteVideo).ConfigureAwait(false);
             if (!File.Exists(partial) || new FileInfo(partial).Length == 0)
                 throw new InvalidOperationException("FFmpeg 没有生成输出文件。");
@@ -458,7 +547,14 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory)
     private static bool IsAudioExtension(string extension) =>
         extension is ".aac" or ".aif" or ".aiff" or ".flac" or ".m4a" or ".m4b" or ".mka" or ".mp3" or ".oga" or ".opus" or ".wav" or ".weba" or ".wma";
 
-    private static string[] MapStreams() => ["-map", "0:V:0?", "-map", "0:a:0?", "-sn", "-dn"];
+    /// <summary>映射选定节目或整个输入中的第一条视频及音频轨道。</summary>
+    /// <param name="program">HLS 节目编号。省略时在整个输入中查找。</param>
+    /// <returns>FFmpeg 轨道映射参数。</returns>
+    private static string[] MapStreams(int? program = null)
+    {
+        string source = program is int id ? $"0:p:{id.ToString(CultureInfo.InvariantCulture)}" : "0";
+        return ["-map", $"{source}:V:0?", "-map", $"{source}:a:0?", "-sn", "-dn"];
+    }
 
     private static string NewOutput(string directory, string name, string extension) =>
         Path.Combine(Path.GetFullPath(directory), TimestampedName(name, DateTime.Now) + extension);

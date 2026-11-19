@@ -9,72 +9,43 @@ namespace LiveRecorder;
 public sealed partial class MainWindow
 {
     private string _defaultOutput = "";
-    private bool _restoringReconnectSettings;
 
     private void RestoreMediaSettings()
     {
         MediaSettings settings = PortableStorage.Configuration.Current.Media;
         _defaultOutput = PortableStorage.DefaultOutputDirectory();
-        PreviewVolume.Value = settings.Volume;
-        PreviewMute.IsOn = settings.Muted;
-        UpdateVolumeGlyph();
-        RestoreRecordingReconnectSettings(settings.Reconnect);
+        MediaPane.AudioSettings = (settings.Volume, settings.Muted);
         ModeBox.SelectedIndex = settings.Mode;
     }
 
-    private void RestoreRecordingReconnectSettings(RecordingReconnectSettings reconnect)
+    /// <summary>打开断流重连设置，仅在用户确认保存后更新录制配置。</summary>
+    /// <param name="sender">触发设置对话框的菜单项。</param>
+    /// <param name="e">菜单点击事件数据。</param>
+    private async void ReconnectOptions_Click(object sender, RoutedEventArgs e) => await MediaPane.HandlePickerAsync(async () =>
     {
-        Initialize(RecordingStallBox, reconnect.StallSeconds, RecordingReconnectSettings.MaxSeconds);
-        Initialize(RecordingRetryBox, reconnect.RetrySeconds, RecordingReconnectSettings.MaxSeconds);
-        Initialize(RecordingWaitBox, reconnect.MaxWaitMinutes, RecordingReconnectSettings.MaxMinutes);
+        RecordingReconnectSettings current = PortableStorage.Configuration.Current.Media.Reconnect;
+        var stall = SettingNumber("断流检测（秒）", current.StallSeconds, 1, RecordingReconnectSettings.MaxSeconds);
+        var retry = SettingNumber("重试间隔（秒）", current.RetrySeconds, 1, RecordingReconnectSettings.MaxSeconds);
+        var wait = SettingNumber("最长重连等待（分钟）", current.MaxWaitMinutes, 1, RecordingReconnectSettings.MaxMinutes);
+        if (await ShowOptionsAsync("断流重连设置", FormPanel(stall, retry, wait), Save))
+            MediaPane.SetStatus("断流重连设置已保存", $"断流检测 {stall.Value:0} 秒 · 重试间隔 {retry.Value:0} 秒 · 最长等待 {wait.Value:0} 分钟");
 
-        void Initialize(NumberBox box, int value, int maximum)
+        void Save()
         {
-            box.Minimum = 1;
-            box.Maximum = maximum;
-            box.Value = value;
-            box.ValueChanged += RecordingReconnectSetting_Changed;
-        }
-    }
-
-    private void RecordingReconnectSetting_Changed(NumberBox sender, NumberBoxValueChangedEventArgs e)
-    {
-        if (_restoringReconnectSettings)
-            return;
-        if (!IsIntegerInRange(e.NewValue, 1, (int)sender.Maximum))
-        {
-            sender.Value = e.OldValue;
-            return;
-        }
-
-        var reconnect = new RecordingReconnectSettings((int)RecordingStallBox.Value, (int)RecordingRetryBox.Value,
-            (int)RecordingWaitBox.Value);
-        try
-        {
+            if (!IsIntegerInRange(stall.Value, 1, RecordingReconnectSettings.MaxSeconds) ||
+                !IsIntegerInRange(retry.Value, 1, RecordingReconnectSettings.MaxSeconds) ||
+                !IsIntegerInRange(wait.Value, 1, RecordingReconnectSettings.MaxMinutes))
+                throw new ArgumentException("断流检测、重试间隔和最长等待均需填写有效的正整数。");
+            var reconnect = new RecordingReconnectSettings((int)stall.Value, (int)retry.Value, (int)wait.Value);
             PortableStorage.Configuration.Update(settings => settings with { Media = settings.Media with { Reconnect = reconnect } });
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
-        {
-            RecordingReconnectSettings saved = PortableStorage.Configuration.Current.Media.Reconnect;
-            // 程序回填数值也会触发变更事件。回滚时暂停保存，避免递归写入。
-            _restoringReconnectSettings = true;
-            try
-            {
-                RecordingStallBox.Value = saved.StallSeconds;
-                RecordingRetryBox.Value = saved.RetrySeconds;
-                RecordingWaitBox.Value = saved.MaxWaitMinutes;
-            }
-            finally { _restoringReconnectSettings = false; }
-            SetStatus("无法保存重连设置", ex.Message, LogLevel.Error, ex);
-        }
-    }
+    });
 
     private void SaveMediaSettings()
     {
         MediaSettings previous = PortableStorage.Configuration.Current.Media;
         int mode = (int)_mode;
-        int volume = (int)PreviewVolume.Value;
-        bool muted = PreviewMute.IsOn;
+        var (volume, muted) = MediaPane.AudioSettings;
         if (previous.Mode == mode && previous.Volume == volume && previous.Muted == muted)
             return;
         try
@@ -89,11 +60,11 @@ public sealed partial class MainWindow
         }
     }
 
-    private async void OutputOptions_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
+    private async void OutputOptions_Click(object sender, RoutedEventArgs e) => await MediaPane.HandlePickerAsync(async () =>
     {
         var path = new TextBox { Header = "输出文件夹", Text = PortableStorage.Configuration.Current.Media.OutputDirectory ?? _defaultOutput };
         var browse = new Button { Content = "浏览…" };
-        browse.Click += async (_, _) => await HandlePickerAsync(async () =>
+        browse.Click += async (_, _) => await MediaPane.HandlePickerAsync(async () =>
         {
             if (await PickFolderAsync() is { } folder)
                 path.Text = folder;
@@ -106,17 +77,17 @@ public sealed partial class MainWindow
         var panel = FormPanel(path, buttons);
         if (await ShowOptionsAsync("保存到", panel, () =>
         {
-            string directory = NormalizeOutputDirectory(path.Text);
+            string directory = MediaPanel.NormalizeOutputDirectory(path.Text);
             string? custom = directory.Equals(_defaultOutput, StringComparison.OrdinalIgnoreCase) ? null : directory;
             PortableStorage.Configuration.Update(settings => settings with { Media = settings.Media with { OutputDirectory = custom } });
         }))
         {
-            _lastResultFolder = null;
-            SetStatus("输出目录已保存", OutputDirectory());
+            MediaPane.ResetOutputFolder();
+            MediaPane.SetStatus("输出目录已保存", MediaPane.OutputDirectory());
         }
     });
 
-    private async void EncodingOptions_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
+    private async void EncodingOptions_Click(object sender, RoutedEventArgs e) => await MediaPane.HandlePickerAsync(async () =>
     {
         MediaSettings media = PortableStorage.Configuration.Current.Media;
         EncodingSettings previous = media.Encoding;
@@ -124,7 +95,12 @@ public sealed partial class MainWindow
         var keepVideoFormat = SettingCheck("保持原格式", previous.KeepVideoFormat);
         var codec = SettingChoice("视频编码格式", (int)previous.VideoCodec, "H.264 (AVC)", "H.265 (HEVC)");
         var deinterlace = SettingChoice("去隔行", (int)media.Deinterlace, "自动（重编码时依据视频标记）", "强制去隔行", "关闭");
-        var part = SettingNumber("录制分片大小（MB）", media.PartSizeMb, 1, 1024);
+        var part = SettingNumber("录制分片目标时长（秒）", media.PartDurationSeconds, 1, int.MaxValue);
+        var partDescription = new TextBlock
+        {
+            Text = "视频按源关键帧切片，实际时长可能延长。",
+            TextWrapping = TextWrapping.Wrap
+        };
         var reencode = SettingCheck("合并时使用所选编码器重新编码", media.Reencode);
         var resolution = SettingChoice("转码分辨率", (int)previous.Resolution,
             "640 × 360", "854 × 480", "1280 × 720", "1920 × 1080", "2560 × 1440", "3840 × 2160");
@@ -168,7 +144,7 @@ public sealed partial class MainWindow
             Section("视频"), keepVideoFormat, codec, encoder, deinterlace, keepResolution, resolution, rate, rates, quality,
             SectionDivider(), Section("音频"), keepAudioFormat, audioCodec, keepSamples, samples,
             keepAudioBitrate, audioPreset, audioBitrate,
-            SectionDivider(), Section("录制和合并"), part, reencode);
+            SectionDivider(), Section("录制和合并"), part, partDescription, reencode);
 
         rate.SelectionChanged += (_, _) => SyncControls();
         videoPreset.SelectionChanged += (_, _) => SyncControls();
@@ -181,7 +157,7 @@ public sealed partial class MainWindow
         SyncControls();
 
         if (await ShowOptionsAsync("编码设置", panel, Save, scrollWidth: 516))
-            SetStatus("编码设置已保存", "转码、重新编码合并，以及原流无法直接封装的录制将使用这些设置。");
+            MediaPane.SetStatus("编码设置已保存", "转码、重新编码合并，以及原流无法直接封装的录制将使用这些设置。");
 
         // 根据「保持原样」与编码模式启用对应控件，仍保留用户之前填写的值。
         void SyncControls()
@@ -213,8 +189,8 @@ public sealed partial class MainWindow
             double selectedAudioRate = audioPreset.SelectedIndex < audioRatesKbps.Length
                 ? audioRatesKbps[audioPreset.SelectedIndex] : audioBitrate.Value;
             bool validVideoRate = EncodingSettings.ValidVideoBitrate(selectedVideoRate, bitrateUnit);
-            if (!IsIntegerInRange(part.Value, 1, 1024))
-                throw new ArgumentException("录制分片大小应为 1 到 1024 MB 的整数。");
+            if (!IsIntegerInRange(part.Value, 1, int.MaxValue))
+                throw new ArgumentException("录制分片目标时长应为至少 1 秒的整数。");
             if (rate.SelectedIndex == (int)VideoRateMode.Bitrate && keepVideoBitrate.IsChecked != true && !validVideoRate)
                 throw new ArgumentException("视频码率应为 1 kbps 到 1000 Mbps。");
             if (keepAudioBitrate.IsChecked != true && !IsIntegerInRange(selectedAudioRate, 8, 1536))
@@ -239,7 +215,7 @@ public sealed partial class MainWindow
                 Media = settings.Media with
                 {
                     Encoder = (VideoEncoder)encoder.SelectedIndex, Deinterlace = (DeinterlaceMode)deinterlace.SelectedIndex,
-                    PartSizeMb = (int)part.Value, Reencode = reencode.IsChecked == true, Encoding = next
+                    PartDurationSeconds = (int)part.Value, Reencode = reencode.IsChecked == true, Encoding = next
                 }
             });
         }
@@ -328,7 +304,7 @@ public sealed partial class MainWindow
         SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact
     };
 
-    private async void LogOptions_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
+    private async void LogOptions_Click(object sender, RoutedEventArgs e) => await MediaPane.HandlePickerAsync(async () =>
     {
         LoggingSettings settings = PortableStorage.Configuration.Current.Logging;
         LogLevel[] choices = Enum.GetValues<LogLevel>();
@@ -337,7 +313,7 @@ public sealed partial class MainWindow
         var size = SettingNumber("单个日志文件大小（MB）", settings.FileSizeMb, 1, 100);
         var count = SettingNumber("最多保留文件数", settings.FileCount, 1, 100);
         if (await ShowOptionsAsync("日志设置", FormPanel(levels, size, count), Save))
-            SetStatus("日志设置已保存", $"{levels.SelectedItem} · {size.Value:0} MB · 保留 {count.Value:0} 个文件");
+            MediaPane.SetStatus("日志设置已保存", $"{levels.SelectedItem} · {size.Value:0} MB · 保留 {count.Value:0} 个文件");
 
         void Save()
         {

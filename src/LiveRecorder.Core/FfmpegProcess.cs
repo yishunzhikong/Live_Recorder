@@ -24,6 +24,7 @@ internal static class FfmpegProcess
     /// <param name="finishOnCancellation">取消时是否先请求 FFmpeg 正常退出，让录制输出有机会完成封装。</param>
     /// <param name="videoWritten">可选回调，在进度首次报告已输出视频帧时调用一次。</param>
     /// <param name="readDiagnostic">可选的普通诊断行接收方。</param>
+    /// <param name="traceTimestamps">启用包级时间戳诊断，供录制实时码率统计。</param>
     /// <returns>等待进程退出及管道读取完成的任务。</returns>
     /// <exception cref="FfmpegFailureException">FFmpeg 以非零状态退出，且本次执行不属于宽限停止。</exception>
     /// <exception cref="OperationCanceledException">执行前已取消，或运行中取消且未启用宽限停止。</exception>
@@ -37,7 +38,7 @@ internal static class FfmpegProcess
         Func<Stream, CancellationToken, Task>? writeInput = null,
         bool finishOnCancellation = false,
         Action? videoWritten = null,
-        Action<string>? readDiagnostic = null)
+        Action<string>? readDiagnostic = null, bool traceTimestamps = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ProcessStartInfo start = ToolProcess.CreateStartInfo(ToolProcess.RequireExecutable(executable, "FFmpeg"), cacheDirectory);
@@ -48,6 +49,8 @@ internal static class FfmpegProcess
         using var process = new Process { StartInfo = start };
         foreach (string argument in new[] { "-hide_banner", "-loglevel", "warning", "-nostats" })
             process.StartInfo.ArgumentList.Add(argument);
+        if (traceTimestamps)
+            process.StartInfo.ArgumentList.Add("-debug_ts");
         if (progress is not null || videoWritten is not null)
         {
             process.StartInfo.ArgumentList.Add("-progress");
@@ -71,7 +74,7 @@ internal static class FfmpegProcess
         try
         {
             exit = process.WaitForExitAsync();
-            errors = ReadErrorsAsync(process, diagnostics, progress, videoWritten, readDiagnostic);
+            errors = ReadErrorsAsync(process, diagnostics, progress, videoWritten, readDiagnostic, traceTimestamps);
             stopping = StopOnCancellationAsync(process, finishOnCancellation, cancellationToken, exitMonitoring.Token);
             if (readOutput is not null)
                 output = readOutput(process.StandardOutput.BaseStream);
@@ -107,7 +110,7 @@ internal static class FfmpegProcess
     }
 
     private static async Task ReadErrorsAsync(Process process, Queue<string> diagnostics, IProgress<MediaProgress>? progress,
-        Action? videoWritten, Action<string>? readDiagnostic)
+        Action? videoWritten, Action<string>? readDiagnostic, bool traceTimestamps)
     {
         // 启用进度后，stderr 同时承载键值进度和普通诊断。
         bool readProgress = progress is not null || videoWritten is not null;
@@ -132,12 +135,20 @@ internal static class FfmpegProcess
             if (!string.IsNullOrWhiteSpace(line))
             {
                 readDiagnostic?.Invoke(line);
+                if (traceTimestamps && IsTimestampTrace(line))
+                    continue;
                 if (diagnostics.Count == 10)
                     diagnostics.Dequeue();
                 diagnostics.Enqueue(line);
             }
         }
     }
+
+    // 包级诊断只用于测量。保留错误队列给真正的失败原因。
+    private static bool IsTimestampTrace(string line) =>
+        line.Contains(" pkt_pts:", StringComparison.Ordinal) || line.Contains(" frame_pts:", StringComparison.Ordinal) ||
+        line.Contains("muxer <- ", StringComparison.Ordinal) || line.Contains("encoder <- ", StringComparison.Ordinal) ||
+        line.Contains("encoder -> ", StringComparison.Ordinal) || line.Contains("filter -> ", StringComparison.Ordinal);
 
     private static async Task StopOnCancellationAsync(Process process, bool graceful,
         CancellationToken cancellationToken, CancellationToken exitMonitoring)

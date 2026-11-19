@@ -64,14 +64,18 @@ public sealed record EncodingSettings
 }
 
 // 从 FFmpeg 的输入诊断中提取首条有效音视频轨道的参数，供后续编码决策使用。
-internal sealed class SourceEncodingInfo
+internal sealed class SourceEncodingInfo(int? program = null)
 {
+    private static readonly Regex Program = new(@"^\s*Program (\d+)(?:\s|$)", RegexOptions.CultureInvariant);
     private static readonly Regex Stream = new(@"^\s*Stream #0:\d+.*?: (Video|Audio):\s+([\w-]+)", RegexOptions.CultureInvariant);
     private static readonly Regex Bitrate = new(@"(?:^|[ ,])([0-9]+(?:\.[0-9]+)?)\s+(kb/s|Mb/s|b/s)(?=,|\s|$)", RegexOptions.CultureInvariant);
     private static readonly Regex SampleRate = new(@"\b([0-9]+) Hz\b", RegexOptions.CultureInvariant);
+    private static readonly Regex VideoSize = new(@"(?:, )([1-9][0-9]*x[1-9][0-9]*)(?=[ ,\[]|$)", RegexOptions.CultureInvariant);
     private bool _readingInput;
+    private int? _currentProgram;
     public long? VideoBitrate { get; private set; }
     public string? VideoCodec { get; private set; }
+    public string? VideoResolution { get; private set; }
     public long? AudioBitrate { get; private set; }
     public string? AudioCodec { get; private set; }
     public int? AudioSampleRate { get; private set; }
@@ -82,11 +86,22 @@ internal sealed class SourceEncodingInfo
     public void Read(string line)
     {
         if (line.StartsWith("Input #0,", StringComparison.Ordinal))
+        {
             _readingInput = true;
+            _currentProgram = null;
+        }
         else if (line.StartsWith("Stream mapping:", StringComparison.Ordinal) || line.StartsWith("Output #", StringComparison.Ordinal))
             _readingInput = false;
         if (!_readingInput)
             return;
+        if (program is int selected)
+        {
+            Match heading = Program.Match(line);
+            if (heading.Success && int.TryParse(heading.Groups[1].ValueSpan, NumberStyles.None, CultureInfo.InvariantCulture, out int id))
+                _currentProgram = id;
+            if (_currentProgram != selected)
+                return;
+        }
         // 只读取输入描述，避免把输出轨道的参数当成源参数。
         Match stream = Stream.Match(line);
         if (!stream.Success)
@@ -97,6 +112,8 @@ internal sealed class SourceEncodingInfo
             if (HasVideo || line.Contains("(attached pic)", StringComparison.Ordinal))
                 return;
             VideoCodec = stream.Groups[2].Value;
+            Match size = VideoSize.Match(line);
+            VideoResolution = size.Success ? size.Groups[1].Value : null;
             VideoBitrate = ParseBitrate(line);
         }
         else if (AudioCodec is null)
@@ -127,16 +144,14 @@ internal static class EncodingArguments
     /// <param name="deinterlace">应用于视频轨道的去隔行模式。</param>
     /// <param name="settings">本次任务的编码设置。</param>
     /// <param name="source">探测得到的轨道信息。</param>
-    /// <param name="forceVideo">是否在视频原可直拷时仍强制重新编码。</param>
     /// <returns>按 FFmpeg 参数顺序排列的参数数组，只处理已发现的轨道。</returns>
     /// <exception cref="InvalidOperationException">无法保留源编码格式，或所需的原始码率、采样率等不可用。</exception>
-    public static string[] Create(VideoEncoder encoder, DeinterlaceMode deinterlace, EncodingSettings settings, SourceEncodingInfo source,
-        bool forceVideo = false)
+    public static string[] Create(VideoEncoder encoder, DeinterlaceMode deinterlace, EncodingSettings settings, SourceEncodingInfo source)
     {
         var args = new List<string>();
         if (source.HasVideo)
         {
-            if (!forceVideo && settings.CopyVideo(deinterlace))
+            if (settings.CopyVideo(deinterlace))
                 args.AddRange(["-c:v", "copy"]);
             else
                 AddVideo(args, encoder, deinterlace, settings, source);
@@ -148,6 +163,25 @@ internal static class EncodingArguments
             else
                 AddAudio(args, settings, source);
         }
+        return args.ToArray();
+    }
+
+    /// <summary>按用户设置对无法直接封装的轨道重新编码。</summary>
+    /// <param name="encoder">视频编码器。</param>
+    /// <param name="deinterlace">视频去隔行设置。</param>
+    /// <param name="settings">编码设置。</param>
+    /// <param name="source">输入轨道的原始编码参数。</param>
+    /// <param name="convertVideo">是否必须重新编码视频。</param>
+    /// <param name="convertAudio">是否必须重新编码音频。</param>
+    /// <returns>先复制所有轨道，再覆盖无法封装的轨道的 FFmpeg 参数。</returns>
+    public static string[] CreateRecordingFallback(VideoEncoder encoder, DeinterlaceMode deinterlace, EncodingSettings settings,
+        SourceEncodingInfo source, bool convertVideo, bool convertAudio)
+    {
+        var args = new List<string> { "-c", "copy" };
+        if (convertVideo)
+            AddVideo(args, encoder, deinterlace, settings, source);
+        if (convertAudio)
+            AddAudio(args, settings, source);
         return args.ToArray();
     }
 
