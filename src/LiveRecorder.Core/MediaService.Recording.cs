@@ -29,7 +29,7 @@ public sealed record RecordingOptions(int PartMegabytes, VideoEncoder Encoder, D
     EncodingSettings? Encoding = null, RecordingReconnectSettings? Reconnect = null);
 
 /// <summary>定义录制断流检测和重连的时间参数。</summary>
-/// <param name="StallSeconds">连续无媒体数据多少秒后判定断流。</param>
+/// <param name="StallSeconds">连续无媒体数据的基础断流阈值，单位为秒。HLS 直播还会考虑分片发布间隔。</param>
 /// <param name="RetrySeconds">尝试恢复的间隔秒数。</param>
 /// <param name="MaxWaitMinutes">从检测到断流起允许等待恢复的分钟数。</param>
 public sealed record RecordingReconnectSettings(int StallSeconds = 10, int RetrySeconds = 2, int MaxWaitMinutes = 3)
@@ -139,8 +139,13 @@ public sealed partial class MediaService
         string expired = $"已达到 {timing.MaxWaitMinutes} 分钟的重连等待上限。";
         var folders = new List<RecordingFolder>();
         bool http = source?.Scheme is "http" or "https";
-        bool hls = http && IsPlaylistPath(source!.AbsolutePath);
-        bool liveHls = false;
+        HttpMediaState? initialState = http
+            ? await InspectHttpMediaAsync(source!, token, headers).ConfigureAwait(false) : null;
+        bool hls = http && (initialState?.HlsSegments is not null || IsPlaylistPath(source!.AbsolutePath));
+        bool liveHls = initialState is { HasFixedDuration: false, HlsSegments: not null };
+        bool paceRecording = http && (initialState?.HasFixedDuration == true && (hls || live != true) ||
+            initialState is null && live == false);
+        TimeSpan mediaStall = RecordingStallThreshold(stall, initialState);
         IReadOnlySet<Uri>? previousHlsRequests = null;
         long? previousHlsSequence = null;
         // 使用单调时钟计算等待上限，系统时间变动不会延长重连期限。
@@ -175,6 +180,7 @@ public sealed partial class MediaService
                     HttpMediaState? current = await InspectHttpMediaAsync(source!, check.Token, headers).ConfigureAwait(false);
                     if (current?.HlsSegments is not { Count: > 0 } segments)
                         continue;
+                    mediaStall = RecordingStallThreshold(stall, current);
                     // 直播清单没有推进时继续等待。结束清单若还有新分片，则尝试保存尾段。
                     hlsStart = FindHlsResumeIndex(current, previousHlsRequests, previousHlsSequence);
                     if (hlsStart == segments.Count)
@@ -197,22 +203,21 @@ public sealed partial class MediaService
                     break;
             }
 
-            // FFmpeg applies live_start_index only to live playlists. Final playlists use a time offset.
-            string[] attemptInput = input;
+            string[] attemptInput = paceRecording ? ["-re", .. input] : input;
             if (hls)
-                attemptInput = ["-f", "hls", "-http_multiple", "0", .. input];
-            if (outage.HasValue && hls)
             {
+                // FFmpeg 仅在直播清单使用分片索引。首次从最新分片开始，重连时保留尚未录制的区间。
                 string[] position = finalOffset is decimal offset
                     ? ["-ss", offset.ToString(CultureInfo.InvariantCulture)]
                     : ["-live_start_index", hlsStart.ToString(CultureInfo.InvariantCulture)];
-                attemptInput = [.. position, .. attemptInput];
+                attemptInput = [.. position, "-f", "hls", "-http_multiple", "0", .. attemptInput];
             }
             Action<DateTimeOffset, string>? onRestored = outage.HasValue
                 ? (at, folder) => events?.Report(new(at, true, $"已开始录制 {Path.GetFileName(folder)}。"))
                 : null;
+            TimeSpan attemptStall = mediaStall;
             TimeSpan startupWait = outage is long started
-                ? reconnectLimit - Stopwatch.GetElapsedTime(started) : stall;
+                ? reconnectLimit - Stopwatch.GetElapsedTime(started) : attemptStall;
             if (startupWait <= TimeSpan.Zero)
             {
                 terminal = expired;
@@ -231,7 +236,7 @@ public sealed partial class MediaService
                         "-rw_timeout", DefaultTimeoutMicroseconds.ToString(CultureInfo.InvariantCulture), "-i", Path.GetFullPath(tailPlaylist)];
                 }
                 attempt = await RecordSegmentAsync(executable, attemptInput, directory, options, progress, token, onRestored,
-                    startupWait < stall ? startupWait : stall, stall, http).ConfigureAwait(false);
+                    startupWait < attemptStall ? startupWait : attemptStall, attemptStall, http).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
             finally
@@ -276,6 +281,7 @@ public sealed partial class MediaService
                 {
                     hls = true;
                     liveHls |= !state.HasFixedDuration;
+                    mediaStall = RecordingStallThreshold(stall, state);
                     if (attempt.Folder is not null && previousHlsRequests is not null)
                     {
                         int matched = FindHlsResumeIndex(state, previousHlsRequests, null);
@@ -293,7 +299,7 @@ public sealed partial class MediaService
             if (outage is null && !token.IsCancellationRequested)
             {
                 outage = stoppedTimestamp;
-                string detail = attempt.Stalled ? $"{timing.StallSeconds} 秒未收到新的媒体数据。" :
+                string detail = attempt.Stalled ? $"{attemptStall.TotalSeconds:0} 秒未收到新的媒体数据。" :
                     attempt.Error is not null ? "媒体连接中断。" : "直播暂时停止提供媒体数据。";
                 if (attempt.LastMediaAt is { } last)
                     detail += $" 最后收到媒体 {last:yyyy-MM-dd HH:mm:ss zzz}。";
@@ -308,6 +314,15 @@ public sealed partial class MediaService
         }
         return new RecordingResult(folders.AsReadOnly(), terminal);
     }
+
+    /// <summary>根据直播清单的目标分片时长，为发布与轮询抖动留出等待时间。</summary>
+    /// <param name="configured">用户设置的基础断流阈值。</param>
+    /// <param name="state">从 HTTP 媒体源探测到的清单状态。</param>
+    /// <returns>HLS 直播采用基础阈值与两倍目标分片时长中的较大值，其他输入使用基础阈值。</returns>
+    private static TimeSpan RecordingStallThreshold(TimeSpan configured, HttpMediaState? state) =>
+        state is { HasFixedDuration: false, HlsTargetDurationSeconds: > 0 } && 2d * state.HlsTargetDurationSeconds > configured.TotalSeconds
+            ? TimeSpan.FromSeconds(Math.Min(2d * state.HlsTargetDurationSeconds, RecordingReconnectSettings.MaxSeconds))
+            : configured;
 
     // 优先用 FFmpeg 最近请求过的分片 URI 定位。旧分片滑出窗口后再使用序号。
     private static int FindHlsResumeIndex(HttpMediaState state, IReadOnlySet<Uri> previousRequests, long? previousSequence)
@@ -367,7 +382,8 @@ public sealed partial class MediaService
                 try
                 {
                     await FfmpegProcess.RunAsync(executable, cacheDirectory,
-                        ["-loglevel", trackHls ? "verbose" : "info", .. input, .. MapStreams(), .. codecs, "-f", "mpegts", "pipe:1"],
+                        ["-loglevel", trackHls ? "verbose" : "info", .. input, .. MapStreams(), .. codecs, "-flush_packets", "1",
+                            "-f", "mpegts", "pipe:1"],
                         progress, watch.Token,
                         readOutput: stream => RecordingParts.SplitAsync(stream, BeginFolder, cacheDirectory,
                             options.PartMegabytes * 1_000_000L, progress, () =>
