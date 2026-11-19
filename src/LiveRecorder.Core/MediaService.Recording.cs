@@ -427,7 +427,8 @@ public sealed partial class MediaService
                 try
                 {
                     bool matroska = extension == RecordingParts.MatroskaExtension;
-                    statistics = options.ReportStreamInfo && progress is not null ? new RecordingStatistics(extension, progress) : null;
+                    statistics = options.ReportStreamInfo && progress is not null
+                        ? new RecordingStatistics(extension, progress, convertVideo, convertAudio) : null;
                     statistics?.Start();
                     // TS 连续读入合并。Matroska 分片独立封装，时间戳从各自起点开始。
                     string pattern = Path.Combine(staging.Replace("%", "%%", StringComparison.Ordinal), "part-%08d" + extension);

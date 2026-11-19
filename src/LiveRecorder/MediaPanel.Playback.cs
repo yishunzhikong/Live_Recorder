@@ -23,6 +23,9 @@ public sealed partial class MediaPanel
     private bool _updatingSeek;
     private bool _draggingSeek;
 
+    /// <summary>报告从预览卡片顶部到操作卡片底边的可见高度。</summary>
+    internal event Action<double>? VisibleHeightChanged;
+
     // 每次预览独立持有播放器、输入和取消令牌，便于忽略旧会话的延迟回调。
     private sealed class PreviewSession(Uri? networkSource, WebVideoLink? webFormat)
     {
@@ -58,6 +61,30 @@ public sealed partial class MediaPanel
     }
 
     private void PreviewPlayer_Initialized(object sender, InitializedEventArgs e) => _videoSurface.TrySetResult(e.SwapChainOptions);
+
+    /// <summary>调整 16:9 预览尺寸，并将操作区移到预览卡片下方。</summary>
+    /// <param name="sender">尺寸变化的预览槽、预览卡片、标题栏、播放控制栏或操作卡片。</param>
+    /// <param name="e">触发重新计算的尺寸变化。</param>
+    private void PreviewLayout_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        const double aspectRatio = 16d / 9d;
+        Thickness padding = PreviewCard.Padding;
+        Thickness margin = PreviewBody.Margin;
+        double horizontalChrome = padding.Left + padding.Right + margin.Left + margin.Right;
+        double verticalChrome = padding.Top + padding.Bottom + margin.Top + margin.Bottom +
+            PreviewHeader.ActualHeight + PreviewTransport.ActualHeight;
+        double width = Math.Max(0, Math.Min(PreviewSlot.ActualWidth - horizontalChrome,
+            (PreviewSlot.ActualHeight - verticalChrome) * aspectRatio));
+        PreviewFrame.Height = width / aspectRatio;
+        PreviewCard.Width = width + horizontalChrome;
+        // 操作区继续按内容保留布局高度，视觉位置跟随预览卡片。
+        OperationsOffset.Y = Math.Min(0, PreviewCard.ActualHeight - PreviewSlot.ActualHeight);
+        if (PreviewSlot.ActualHeight > 0 && OperationsCard.ActualHeight > 0)
+        {
+            double visibleHeight = PreviewSlot.ActualHeight + OperationsOffset.Y + RightLayout.RowSpacing + OperationsCard.ActualHeight;
+            VisibleHeightChanged?.Invoke(visibleHeight);
+        }
+    }
 
     private async void PreviewLink_Click(object sender, RoutedEventArgs e)
     {
@@ -231,7 +258,7 @@ public sealed partial class MediaPanel
             session.Opened = true;
             WriteWindowLog(LogLevel.Information, "Playback", "预览开始播放。");
             PreviewPlaceholder.Visibility = Visibility.Collapsed;
-            PreviewTransport.Visibility = Visibility.Visible;
+            PreviewPlay.IsEnabled = PreviewVolumeButton.IsEnabled = true;
             SetPreviewVolume(player);
         }
         _previewClock ??= CreatePreviewClock();
@@ -412,7 +439,7 @@ public sealed partial class MediaPanel
         WriteWindowLog(LogLevel.Debug, "Playback", "正在关闭预览。");
         _previewClock?.Stop();
         _draggingSeek = false;
-        PreviewTransport.Visibility = Visibility.Collapsed;
+        PreviewPlay.IsEnabled = PreviewVolumeButton.IsEnabled = false;
         SetPreviewPlayButton(false);
         PreviewSeek.IsEnabled = false;
         SetSeekPosition(0);

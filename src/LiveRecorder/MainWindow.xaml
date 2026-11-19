@@ -40,7 +40,7 @@
         </MenuBar>
 
         <!-- 左栏只切换输入与模式专属设置，右栏控件保持共用。 -->
-        <Border Grid.Row="1" Style="{StaticResource Card}">
+        <Border x:Name="SettingsCard" Grid.Row="1" Style="{StaticResource Card}" VerticalAlignment="Top">
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
                 <StackPanel Padding="20" Spacing="16">
                     <TextBlock Text="设置" Style="{StaticResource TitleTextBlockStyle}" />

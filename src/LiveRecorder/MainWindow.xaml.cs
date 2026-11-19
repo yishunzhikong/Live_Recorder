@@ -23,6 +23,7 @@ public sealed partial class MainWindow : Window
         _handle = WinRT.Interop.WindowNative.GetWindowHandle(this);
         MediaPane.Attach(AppWindow.Id, _handle, _logWindowId, PortableStorage.DefaultOutputDirectory());
         MediaPane.SetTools(_ffmpegPath, _webAnalyzer);
+        MediaPane.VisibleHeightChanged += height => SettingsCard.Height = height;
         MediaPane.BusyChanged += (_, _) =>
         {
             SetControlsEnabled(!MediaPane.IsBusy);
@@ -46,8 +47,7 @@ public sealed partial class MainWindow : Window
         };
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
-        if (!WindowAspect.Apply(AppWindow, _handle))
-            WriteWindowLog(LogLevel.Warning, "Window", "无法启用 16:9 拖动约束，窗口将使用系统调整大小。");
+        WindowPlacement.Apply(AppWindow, _handle);
         AppWindow.Closing += Window_Closing;
         WriteWindowLog(LogLevel.Information, "Window", "窗口已打开。");
     }

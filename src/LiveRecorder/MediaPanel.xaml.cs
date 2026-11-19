@@ -430,7 +430,14 @@ public sealed partial class MediaPanel : UserControl
             {
                 long now = Stopwatch.GetTimestamp();
                 RecordingInfo.Visibility = Visibility.Visible;
-                SetRecordingText(RecordingWriteInfo, $"分片 {media.Container}  ·  实时写入 {writeRate.Sample(now, writtenBytes)}");
+                string mode = (media.VideoReencoded, media.AudioReencoded) switch
+                {
+                    (true, true) => "转码录制（视频和音频）",
+                    (true, false) => "转码录制（视频）",
+                    (false, true) => "转码录制（音频）",
+                    _ => "原码录制"
+                };
+                SetRecordingText(RecordingWriteInfo, $"{mode}  ·  分片 {media.Container}  ·  实时写入 {writeRate.Sample(now, writtenBytes)}");
                 SetRecordingText(RecordingVideoInfo, FormatTrack("视频", media.Video, videoRate.Sample(now, media.VideoBytes)));
                 SetRecordingText(RecordingAudioInfo, FormatTrack("音频", media.Audio, audioRate.Sample(now, media.AudioBytes)));
             }

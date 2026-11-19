@@ -11,14 +11,17 @@ namespace LiveRecorder.Core;
 /// <param name="Audio">实际输出音频轨道的说明。</param>
 /// <param name="VideoBytes">提交给封装器的视频包累计字节数。</param>
 /// <param name="AudioBytes">提交给封装器的音频包累计字节数。</param>
+/// <param name="VideoReencoded">当前录制尝试是否对视频轨道重新编码。</param>
+/// <param name="AudioReencoded">当前录制尝试是否对音频轨道重新编码。</param>
 public sealed record RecordingMediaProgress(long Attempt, string Container, string? Video = null, string? Audio = null,
-    long? VideoBytes = null, long? AudioBytes = null);
+    long? VideoBytes = null, long? AudioBytes = null, bool VideoReencoded = false, bool AudioReencoded = false);
 
 /// <summary>解析录制进程的输出轨道和封装前包大小，将变化限频后报告给界面。</summary>
-internal sealed partial class RecordingStatistics(string extension, IProgress<MediaProgress> progress)
+internal sealed partial class RecordingStatistics(string extension, IProgress<MediaProgress> progress, bool videoReencoded, bool audioReencoded)
 {
     private RecordingMediaProgress _current = new(Stopwatch.GetTimestamp(),
-        extension == RecordingParts.MatroskaExtension ? "MKV" : "TS");
+        extension == RecordingParts.MatroskaExtension ? "MKV" : "TS",
+        VideoReencoded: videoReencoded, AudioReencoded: audioReencoded);
     private bool _output;
     private long _lastReport = Stopwatch.GetTimestamp();
     private long? _videoBytes;
