@@ -309,7 +309,7 @@ public sealed partial class MainWindow : Window
                 return;
             if (progress.Bytes is long bytes)
                 size = progress.TotalBytes is > 0 ? $"{bytes / 1_000_000d:0.00} / {progress.TotalBytes / 1_000_000d:0.00} MB"
-                    : $"{bytes / 1_000_000d:0.00} MB";
+                    : bytes < 1_000_000 ? $"{bytes / 1000d:0.0} kB" : $"{bytes / 1_000_000d:0.00} MB";
             if (progress.TotalBytes is > 0 && progress.Bytes is long received)
             {
                 TaskProgress.IsIndeterminate = false;

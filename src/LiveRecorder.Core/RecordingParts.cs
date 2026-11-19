@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.RegularExpressions;
 
 namespace LiveRecorder.Core;
@@ -35,7 +36,7 @@ internal static partial class RecordingParts
     /// <param name="createDirectory">首次开始写分片时调用，用于创建目标目录。</param>
     /// <param name="cacheDirectory">未发布分片的暂存目录。</param>
     /// <param name="maximumBytes">单段最大字节数，向下对齐到 188 字节的传输包边界。</param>
-    /// <param name="progress">可选的累计字节数和分片数接收方。</param>
+    /// <param name="progress">可选的进度接收方。字节数包含当前分片，分片数仅统计已保存的文件。</param>
     /// <param name="received">每次成功读取数据后调用，用于重置录制无数据计时。</param>
     /// <returns>读取上游直到流结束并完成分片保存的任务。</returns>
     /// <exception cref="MediaPublishException">完整分片无法发布到目标目录。</exception>
@@ -47,6 +48,8 @@ internal static partial class RecordingParts
         byte[] buffer = new byte[BufferSize];
         int partNumber = 0;
         long total = 0;
+        long lastReportedBytes = 0;
+        var progressClock = Stopwatch.StartNew();
         int buffered = 0;
         FileStream? destination = null;
         string? directory = null;
@@ -78,6 +81,10 @@ internal static partial class RecordingParts
                     if (destination.Position == limit)
                         await FinishPartAsync().ConfigureAwait(false);
                 }
+                // 低码率下填满分片需要较长时间，写入中的字节数也应更新。
+                if (progress is not null && total != lastReportedBytes &&
+                    (lastReportedBytes == 0 || progressClock.ElapsedMilliseconds >= 200))
+                    ReportProgress();
                 // 本次未凑齐的包留到下一轮，收齐后再写入。
                 buffered = length - packetBytes;
                 buffer.AsSpan(packetBytes, buffered).CopyTo(buffer);
@@ -101,7 +108,14 @@ internal static partial class RecordingParts
             // 编号属于连续序列，遇到占用应报告保存失败，便于保留缓存并排查。
             MediaOutput.Publish(incompletePath, directory!, $"part-{partNumber + 1:D8}", ".ts", useAvailableName: false);
             partNumber++;
+            ReportProgress();
+        }
+
+        void ReportProgress()
+        {
             progress?.Report(new MediaProgress(Bytes: total, Parts: partNumber));
+            lastReportedBytes = total;
+            progressClock.Restart();
         }
     }
 }
