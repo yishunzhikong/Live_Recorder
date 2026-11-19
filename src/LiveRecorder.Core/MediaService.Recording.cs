@@ -45,7 +45,10 @@ public sealed record RecordingOptions(int PartDurationSeconds, VideoEncoder Enco
 /// <param name="MaxWaitMinutes">从检测到断流起允许等待恢复的分钟数。</param>
 public sealed record RecordingReconnectSettings(int StallSeconds = 10, int RetrySeconds = 2, int MaxWaitMinutes = 3)
 {
+    /// <summary>断流阈值和重试间隔可配置的最大秒数。</summary>
     public const int MaxSeconds = 3600;
+
+    /// <summary>一次断流可配置的最长重连等待分钟数。</summary>
     public const int MaxMinutes = 1440;
 
     internal RecordingReconnectSettings Normalize() => this with
@@ -374,7 +377,11 @@ public sealed partial class MediaService
             ? TimeSpan.FromSeconds(Math.Min(2d * state.HlsTargetDurationSeconds, RecordingReconnectSettings.MaxSeconds))
             : configured;
 
-    // 优先用 FFmpeg 最近请求过的分片 URI 定位。旧分片滑出窗口后再使用序号。
+    /// <summary>定位 HLS 重连时应开始读取的下一条分片。</summary>
+    /// <param name="state">当前 HLS 清单及其媒体序号。</param>
+    /// <param name="previousRequests">FFmpeg 在上次尝试中请求过的分片地址。</param>
+    /// <param name="previousSequence">已知的上一条分片序号。地址无法匹配时用作回退。</param>
+    /// <returns>可从零开始的分片索引。等于分片总数时表示当前清单没有新分片。</returns>
     private static int FindHlsResumeIndex(HttpMediaState state, IReadOnlySet<Uri> previousRequests, long? previousSequence)
     {
         IReadOnlyList<HlsSegment> segments = state.HlsSegments!;

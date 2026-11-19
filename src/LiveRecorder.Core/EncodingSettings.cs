@@ -3,33 +3,126 @@ using System.Text.RegularExpressions;
 
 namespace LiveRecorder.Core;
 
-public enum VideoCodec { H264, H265 }
-public enum VideoResolution { P360, P480, P720, P1080, P1440, P2160 }
-public enum VideoRateMode { Bitrate, Quality }
-public enum BitrateMode { Variable, Constant }
-public enum BitrateUnit { Kbps, Mbps }
-public enum EncodingQuality { Smaller, Standard, Higher }
-public enum AudioFormat { Aac, Mp3, Ac3, Opus }
+/// <summary>指定重新编码的视频格式。</summary>
+public enum VideoCodec
+{
+    /// <summary>H.264（AVC）。</summary>
+    H264,
+
+    /// <summary>H.265（HEVC）。</summary>
+    H265
+}
+/// <summary>指定输出高度，输出宽度按源画幅计算。</summary>
+public enum VideoResolution
+{
+    /// <summary>目标高度为 360 像素。</summary>
+    P360,
+
+    /// <summary>目标高度为 480 像素。</summary>
+    P480,
+
+    /// <summary>目标高度为 720 像素。</summary>
+    P720,
+
+    /// <summary>目标高度为 1080 像素。</summary>
+    P1080,
+
+    /// <summary>目标高度为 1440 像素。</summary>
+    P1440,
+
+    /// <summary>目标高度为 2160 像素。</summary>
+    P2160
+}
+/// <summary>选择用码率或编码器质量目标控制视频输出。</summary>
+public enum VideoRateMode
+{
+    /// <summary>使用原始码率或指定目标码率。</summary>
+    Bitrate,
+
+    /// <summary>使用编码器支持的质量档位。</summary>
+    Quality
+}
+/// <summary>指定按目标码率编码时的码率模式。</summary>
+public enum BitrateMode
+{
+    /// <summary>允许场景之间的码率波动。</summary>
+    Variable,
+
+    /// <summary>向编码器请求恒定码率。</summary>
+    Constant
+}
+/// <summary>定义码率字段的十进制单位。</summary>
+public enum BitrateUnit
+{
+    /// <summary>千比特每秒。</summary>
+    Kbps,
+
+    /// <summary>兆比特每秒，等于 1000 kbps。</summary>
+    Mbps
+}
+/// <summary>定义质量模式的三个档位。</summary>
+public enum EncodingQuality
+{
+    /// <summary>优先减小成品体积。</summary>
+    Smaller,
+
+    /// <summary>使用默认的质量档位。</summary>
+    Standard,
+
+    /// <summary>优先保留更多画面细节。</summary>
+    Higher
+}
+/// <summary>指定重新编码的音频格式。</summary>
+public enum AudioFormat
+{
+    /// <summary>高级音频编码（AAC）。</summary>
+    Aac,
+
+    /// <summary>MPEG Layer III（MP3）。</summary>
+    Mp3,
+
+    /// <summary>Dolby Digital（AC-3）。</summary>
+    Ac3,
+
+    /// <summary>Opus 音频编码。</summary>
+    Opus
+}
 
 /// <summary>为视频与音频轨道保存复制或重新编码的设置。</summary>
 /// <remarks>两类轨道分别判断能否直接复制。保持原格式仍允许因分辨率、码率或其他选项而重新编码。</remarks>
 public sealed record EncodingSettings
 {
+    /// <summary>重新编码且不保留源格式时使用的视频编码。</summary>
     public VideoCodec VideoCodec { get; init; }
+    /// <summary>重新编码时是否沿用源视频编码格式。</summary>
     public bool KeepVideoFormat { get; init; } = true;
+    /// <summary>是否保留源视频宽高。</summary>
     public bool KeepResolution { get; init; } = true;
+    /// <summary>不保留原分辨率时使用的目标高度档位。</summary>
     public VideoResolution Resolution { get; init; } = VideoResolution.P1080;
+    /// <summary>控制视频编码码率或质量的方式。</summary>
     public VideoRateMode RateMode { get; init; }
+    /// <summary>指定目标码率时使用的可变或恒定码率模式。</summary>
     public BitrateMode BitrateMode { get; init; }
+    /// <summary>按码率控制时是否采用源视频声明的码率。</summary>
     public bool KeepVideoBitrate { get; init; } = true;
+    /// <summary>不保留源码率时使用的数值，单位由 VideoBitrateUnit 指定。</summary>
     public double VideoBitrate { get; init; } = 4;
+    /// <summary>自定义视频码率的输入单位。</summary>
     public BitrateUnit VideoBitrateUnit { get; init; } = BitrateUnit.Mbps;
+    /// <summary>质量控制模式下传给视频编码器的质量档位。</summary>
     public EncodingQuality Quality { get; init; } = EncodingQuality.Standard;
+    /// <summary>重新编码时是否沿用源音频编码格式。</summary>
     public bool KeepAudioFormat { get; init; } = true;
+    /// <summary>不保留音频格式时使用的输出编码。</summary>
     public AudioFormat AudioFormat { get; init; }
+    /// <summary>是否保留源音频采样率。</summary>
     public bool KeepAudioSampleRate { get; init; } = true;
+    /// <summary>不保留源采样率时使用的目标采样率，单位为 Hz。</summary>
     public int AudioSampleRate { get; init; } = 48000;
+    /// <summary>是否采用源音频声明的码率。</summary>
     public bool KeepAudioBitrate { get; init; } = true;
+    /// <summary>不保留源音频码率时使用的目标码率，单位为 kbps。</summary>
     public int AudioBitrateKbps { get; init; } = 160;
 
     internal bool CopyVideo(DeinterlaceMode deinterlace) =>
@@ -63,7 +156,8 @@ public sealed record EncodingSettings
     };
 }
 
-// 从 FFmpeg 的输入诊断中提取首条有效音视频轨道的参数，供后续编码决策使用。
+/// <summary>从 FFmpeg 的输入诊断中提取首条有效音视频轨道的参数。</summary>
+/// <param name="program">只接收此节目编号下的轨道。为空时读取任一节目。</param>
 internal sealed class SourceEncodingInfo(int? program = null)
 {
     private static readonly Regex Program = new(@"^\s*Program (\d+)(?:\s|$)", RegexOptions.CultureInvariant);
@@ -136,7 +230,7 @@ internal sealed class SourceEncodingInfo(int? program = null)
     }
 }
 
-// 将编码选项和已探测的轨道参数转换成 FFmpeg 参数。
+/// <summary>将编码选项和已探测的轨道参数转换成 FFmpeg 参数。</summary>
 internal static class EncodingArguments
 {
     /// <summary>根据源轨道及设置生成 FFmpeg 的复制、过滤和编码参数。</summary>

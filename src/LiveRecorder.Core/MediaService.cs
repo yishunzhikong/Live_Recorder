@@ -8,8 +8,33 @@ using System.Xml;
 
 namespace LiveRecorder.Core;
 
-public enum VideoEncoder { Software, Intel, Nvidia, Amd }
-public enum DeinterlaceMode { Automatic, Always, Off }
+/// <summary>选择重新编码视频时使用的 FFmpeg 编码器。</summary>
+public enum VideoEncoder
+{
+    /// <summary>通过 CPU 执行视频编码。</summary>
+    Software,
+
+    /// <summary>使用 Intel Quick Sync Video 编码。</summary>
+    Intel,
+
+    /// <summary>使用 NVIDIA NVENC 编码。</summary>
+    Nvidia,
+
+    /// <summary>使用 AMD AMF 编码。</summary>
+    Amd
+}
+/// <summary>控制重新编码时的去隔行处理。</summary>
+public enum DeinterlaceMode
+{
+    /// <summary>仅处理标记为隔行的视频帧。</summary>
+    Automatic,
+
+    /// <summary>对全部视频帧应用去隔行。</summary>
+    Always,
+
+    /// <summary>省略去隔行滤镜。</summary>
+    Off
+}
 
 /// <summary>表示媒体任务的一次增量进度更新。</summary>
 /// <param name="Bytes">累计处理的字节数。</param>
@@ -23,6 +48,7 @@ public sealed record MediaProgress(long? Bytes = null, long? TotalBytes = null, 
 /// <summary>提供媒体探测、下载、录制、预览输入和本地编辑。</summary>
 /// <param name="ffmpeg">选用的 FFmpeg 路径。需要 FFmpeg 的操作会检查该路径。</param>
 /// <param name="cacheDirectory">便携缓存目录，用于未发布的媒体输出。</param>
+/// <param name="debug">用于关联选流、录制和子进程日志的可选诊断记录器。</param>
 public sealed partial class MediaService(string? ffmpeg, string cacheDirectory, DebugTrace? debug = null)
 {
     private const int CopyBuffer = 128 * 1024;
@@ -67,6 +93,7 @@ public sealed partial class MediaService(string? ffmpeg, string cacheDirectory, 
     /// <param name="source">原始媒体地址。</param>
     /// <param name="token">用于中止探测的令牌。</param>
     /// <param name="headers">可选的媒体请求头。</param>
+    /// <param name="debug">接收 HTTP 探测诊断的可选记录器。</param>
     /// <returns>选中的入口。探测失败时保留原始地址。</returns>
     public static async Task<NetworkMediaSelection> SelectNetworkMediaAsync(Uri source, CancellationToken token,
         MediaRequestHeaders? headers = null, DebugTrace? debug = null)

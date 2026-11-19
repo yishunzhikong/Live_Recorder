@@ -14,14 +14,20 @@ namespace LiveRecorder.Core;
 /// <param name="IsLive">解析时媒体是否为直播。</param>
 public sealed record WebVideoLink(string Label, string Url, bool AudioOnly, string PageUrl, string? FormatId, bool IsLive)
 {
+    /// <summary>访问该媒体地址时允许转发的请求头。没有声明时为空。</summary>
     public MediaRequestHeaders? Headers { get; init; }
 }
+
+/// <summary>表示一次网页媒体分析得到的标题和格式列表。</summary>
+/// <param name="Title">页面媒体标题。</param>
+/// <param name="Links">通过筛选的可播放或可下载格式。</param>
 public sealed record WebVideoAnalysis(string Title, IReadOnlyList<WebVideoLink> Links);
 
 /// <summary>调用 yt-dlp 解析网页格式，并为所选音轨提供下载和预览。</summary>
 /// <param name="executable">yt-dlp 可执行文件路径。</param>
 /// <param name="deno">提供 JavaScript 运行环境的 Deno 可执行文件路径。</param>
 /// <param name="cacheDirectory">便携工具缓存目录。</param>
+/// <param name="debug">用于记录格式提取和音频供流诊断的可选记录器。</param>
 public sealed class WebVideoAnalyzer(string? executable, string deno, string cacheDirectory, DebugTrace? debug = null)
 {
     /// <summary>从网页提取用于预览或下载的 HTTP(S) 直链。</summary>

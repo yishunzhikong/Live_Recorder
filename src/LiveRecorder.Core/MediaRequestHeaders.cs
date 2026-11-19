@@ -9,8 +9,13 @@ public sealed class MediaRequestHeaders
     private MediaRequestHeaders(string? userAgent, string? referer, string? origin) =>
         (UserAgent, Referer, Origin) = (userAgent, referer, origin);
 
+    /// <summary>经筛选的客户端标识。上游未提供时为空。</summary>
     public string? UserAgent { get; }
+
+    /// <summary>经筛选的 HTTP(S) 来源页面地址。</summary>
     public string? Referer { get; }
+
+    /// <summary>经筛选的来源协议、主机和端口。</summary>
     public string? Origin { get; }
 
     /// <summary>读取选中格式的请求头，缺失项从页面级请求头补齐。</summary>
@@ -50,6 +55,8 @@ public sealed class MediaRequestHeaders
         return null;
     }
 
+    /// <summary>向当前 HTTP 媒体请求补充已验证的请求头。</summary>
+    /// <param name="request">还未发送的媒体请求。</param>
     internal void Apply(HttpRequestMessage request)
     {
         if (UserAgent is not null)
@@ -60,6 +67,8 @@ public sealed class MediaRequestHeaders
             request.Headers.TryAddWithoutValidation("Origin", Origin);
     }
 
+    /// <summary>为 FFmpeg 生成调用方可直接追加的 HTTP 请求头参数。</summary>
+    /// <returns>有序参数数组。没有可用请求头时返回空数组。</returns>
     internal string[] FfmpegArguments()
     {
         var arguments = new List<string>();

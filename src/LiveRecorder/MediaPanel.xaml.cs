@@ -37,6 +37,7 @@ public sealed partial class MediaPanel : UserControl
     private bool _waitingForRecordingReconnect;
     private bool _closeWhenIdle;
 
+    /// <summary>初始化媒体操作控件与预览交互。</summary>
     public MediaPanel()
     {
         InitializeComponent();
@@ -45,9 +46,13 @@ public sealed partial class MediaPanel : UserControl
 
     /// <summary>当前台操作开始或结束时，通知左栏更新操作状态。</summary>
     internal event EventHandler? BusyChanged;
+    /// <summary>指示是否存在占用右栏的前台任务。</summary>
     internal bool IsBusy => _operation is not null;
+    /// <summary>指示前台任务、播放或预览清理是否仍在运行。</summary>
     internal bool HasActivity => IsBusy || _preview is not null || !_previewCleanup.IsCompleted;
+    /// <summary>读取右栏当前状态标题和详情。</summary>
     internal (string Title, string Detail) Status => (StatusTitle.Text, StatusDetail.Text);
+    /// <summary>获取或恢复预览音量百分比和静音状态。</summary>
     internal (int Volume, bool Muted) AudioSettings
     {
         get => ((int)PreviewVolume.Value, PreviewMute.IsOn);
@@ -86,6 +91,7 @@ public sealed partial class MediaPanel : UserControl
         _webAnalyzer = analyzer;
     }
 
+    /// <summary>输出位置变化时清除上次任务保存的文件夹。</summary>
     internal void ResetOutputFolder() => _lastResultFolder = null;
 
     /// <summary>更新右栏的输入快照，源变化时关闭上一条网络预览。</summary>
@@ -138,6 +144,8 @@ public sealed partial class MediaPanel : UserControl
         finally { _sourceLock.Release(); }
     }
 
+    /// <summary>阻止新任务，取消前台操作并开始关闭预览。</summary>
+    /// <returns>用于等待预览资源释放的任务。</returns>
     internal Task BeginCloseAsync()
     {
         _closeWhenIdle = true;
@@ -145,6 +153,7 @@ public sealed partial class MediaPanel : UserControl
         return StopPreviewAsync();
     }
 
+    /// <summary>在预览完成清理后释放本窗口的 LibVLC 实例。</summary>
     internal void DisposePlayer()
     {
         _vlc?.Dispose();
@@ -255,6 +264,9 @@ public sealed partial class MediaPanel : UserControl
         });
     });
 
+    /// <summary>运行界面操作，并在选择器或设置操作失败时更新任务状态。</summary>
+    /// <param name="action">需要执行的异步界面操作。</param>
+    /// <returns>等到该操作结束且状态更新完成的任务。</returns>
     internal async Task HandlePickerAsync(Func<Task> action)
     {
         try { await action(); }
@@ -269,7 +281,9 @@ public sealed partial class MediaPanel : UserControl
         return (await picker.PickSingleFileAsync())?.Path;
     }
 
-    // 重连事件同步到界面。旧任务的迟到事件只写日志，避免覆盖新任务状态。
+    /// <summary>创建能将录制重连事件同步到界面的进度回调。</summary>
+    /// <param name="token">用于区分当前任务和已结束任务的令牌。</param>
+    /// <returns>更新活动任务状态的回调。迟到事件仅写日志。</returns>
     private IProgress<RecordingEvent> RecordingEvents(CancellationToken token) => new Progress<RecordingEvent>(update =>
     {
         string title = update.Recovered ? "录制已恢复" : "等待重连";
@@ -420,7 +434,8 @@ public sealed partial class MediaPanel : UserControl
         SetStatus(title, "正在读取媒体…");
     }
 
-    // 后台进度先合并到共享状态，再定时刷新界面，避免每次回调都排队更新控件。
+    /// <summary>创建合并后台进度并定时刷新右栏的报告器。</summary>
+    /// <returns>当前任务用于发布增量进度的报告器。</returns>
     internal IProgress<MediaProgress> CreateProgress()
     {
         StopProgressUpdates();
@@ -653,6 +668,11 @@ public sealed partial class MediaPanel : UserControl
         catch (Exception ex) { SetStatus("无法打开文件夹", ex.Message, LogLevel.Error, ex); }
     }
 
+    /// <summary>更新右栏状态，并按指定级别记录该变化。</summary>
+    /// <param name="title">状态标题。</param>
+    /// <param name="detail">可供用户查看的详情。</param>
+    /// <param name="level">用于输出状态的日志级别。</param>
+    /// <param name="error">相关的可选异常。</param>
     internal void SetStatus(string title, string detail, LogLevel level = LogLevel.Information, Exception? error = null)
     {
         StatusTitle.Text = title;
@@ -671,9 +691,15 @@ public sealed partial class MediaPanel : UserControl
         SetStatus(title, file);
     }
 
+    /// <summary>解析媒体任务使用的自定义或默认输出目录。</summary>
+    /// <returns>已规范化的目录路径。</returns>
     internal string OutputDirectory() =>
         NormalizeOutputDirectory(PortableStorage.Configuration.Current.Media.OutputDirectory ?? _defaultOutput);
 
+    /// <summary>校验输出目录输入并规范化为绝对路径。</summary>
+    /// <param name="value">来自配置或设置表单的目录。</param>
+    /// <returns>处理首尾空白和环境变量后的路径。</returns>
+    /// <exception cref="ArgumentException">目录在展开环境变量后仍不是完整路径。</exception>
     internal static string NormalizeOutputDirectory(string value)
     {
         string directory = Environment.ExpandEnvironmentVariables(value.Trim().Trim('"'));

@@ -329,6 +329,9 @@ public sealed partial class MediaPanel
         }
     }
 
+    /// <summary>记录有限数量的 VLC 解码器、渲染器和去隔行诊断。</summary>
+    /// <param name="sender">发布诊断的 LibVLC 实例。</param>
+    /// <param name="args">包含诊断模块、级别和文本的事件数据。</param>
     private void VlcDiagnostic(object? sender, LogEventArgs args)
     {
         if (_debug?.Enabled != true || Volatile.Read(ref _nativeDiagnosticsRemaining) <= 0)
@@ -349,6 +352,9 @@ public sealed partial class MediaPanel
         }
     }
 
+    /// <summary>将预览专用解码策略应用到即将播放的媒体。</summary>
+    /// <param name="media">尚未交给播放器的 VLC 媒体对象。</param>
+    /// <param name="source">用于识别 IPTV 的网络地址。本地文件或音频管道时可为空。</param>
     private void ApplyPreviewDecoder(Media media, Uri? source)
     {
         PreviewDecoder decoder = PortableStorage.Configuration.Current.Media.PreviewDecoder;
@@ -550,7 +556,9 @@ public sealed partial class MediaPanel
 
     private async void StopPreview_Click(object sender, RoutedEventArgs e) => await StopPreviewAsync();
 
-    // 同一 RTP 或 UDP 端口开始录制前，先释放占用该端口的预览。
+    /// <summary>开始录制前释放正在占用同一 RTP 或 UDP 端口的预览。</summary>
+    /// <param name="source">用于匹配接收端口的录制地址。为空时释放当前组播预览。</param>
+    /// <returns>等待相关预览资源释放的任务。</returns>
     private Task ReleaseDatagramPreviewAsync(Uri? source = null) =>
         _preview?.NetworkSource is { Scheme: "rtp" or "udp" } active &&
         (source is null || active.Port == source.Port) ? StopPreviewAsync() : _previewCleanup;

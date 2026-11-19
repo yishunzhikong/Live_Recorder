@@ -11,6 +11,12 @@ internal static class PortableApplicationUpdate
     private static readonly HashSet<string> Preserved = new(StringComparer.OrdinalIgnoreCase) { "logs", "config", "tools" };
 
     /// <summary>验证安装路径与下载包，在同一个卷准备完整的新版程序。</summary>
+    /// <param name="updater">用于下载和验证发行包的更新服务。</param>
+    /// <param name="update">将要安装的 GitHub 稳定发行版。</param>
+    /// <param name="progress">接收下载字节数的进度回调。</param>
+    /// <param name="token">用于取消下载或解压的令牌。</param>
+    /// <returns>等待安装程序接管的新版本暂存目录。</returns>
+    /// <exception cref="InvalidDataException">包内路径、文件布局或版本与发行版不符。</exception>
     internal static async Task<string> PrepareAsync(ToolUpdater updater, ApplicationUpdate update,
         IProgress<MediaProgress> progress, CancellationToken token)
     {
@@ -53,7 +59,12 @@ internal static class PortableApplicationUpdate
         }
     }
 
-    // 官方便携包只有一层包装目录。系统 ZIP API 另行验证条目无法逸出解压目录。
+    /// <summary>检验便携包的单层包装目录，并在暂存区解压。</summary>
+    /// <param name="archive">已验证摘要的 ZIP 文件路径。</param>
+    /// <param name="staging">用于解压的隔离暂存目录。</param>
+    /// <param name="expectedRoot">以发行标签命名的预期包装目录。</param>
+    /// <param name="token">用于取消校验和解压的令牌。</param>
+    /// <returns>解压后的便携包根目录。</returns>
     private static async Task<string> ExtractAsync(string archive, string staging, string expectedRoot, CancellationToken token)
     {
         using ZipArchive zip = ZipFile.OpenRead(archive);
@@ -74,6 +85,7 @@ internal static class PortableApplicationUpdate
     }
 
     /// <summary>启动独立更新程序。调用方随后正常退出以释放应用文件。</summary>
+    /// <param name="staging">包含已验证新版程序和更新脚本的暂存目录。</param>
     internal static void Start(string staging)
     {
         using Process current = Process.GetCurrentProcess();
@@ -92,6 +104,8 @@ internal static class PortableApplicationUpdate
         PortableStorage.Log.Write(LogLevel.Debug, "Update", $"已启动独立安装程序 · PID={process.Id}，等待应用退出后替换文件。");
     }
 
+    /// <summary>尝试清理尚未交给安装程序的暂存目录。</summary>
+    /// <param name="staging">本次更新创建的暂存目录。</param>
     internal static void Discard(string staging)
     {
         try { Directory.Delete(staging, recursive: true); }

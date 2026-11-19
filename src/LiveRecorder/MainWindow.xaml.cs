@@ -19,6 +19,7 @@ public sealed partial class MainWindow : Window
     private bool _closeWhenIdle;
     private bool _closingAfterCleanup;
 
+    /// <summary>初始化窗口、便携工具、媒体面板及原生窗口尺寸约束。</summary>
     public MainWindow()
     {
         _debug = new DebugTrace(PortableStorage.Log, _logWindowId);

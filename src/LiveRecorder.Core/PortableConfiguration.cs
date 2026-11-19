@@ -3,7 +3,24 @@ using System.Text.Json.Serialization;
 
 namespace LiveRecorder.Core;
 
-public enum LogLevel { Debug = 1, Information = 2, Warning = 3, Error = 4, None = 6 }
+/// <summary>定义日志过滤级别，按严重程度排列。</summary>
+public enum LogLevel
+{
+    /// <summary>诊断程序内部决策和详细进度。</summary>
+    Debug = 1,
+
+    /// <summary>记录正常任务和结果。</summary>
+    Information = 2,
+
+    /// <summary>记录可以继续处理或需要关注的情况。</summary>
+    Warning = 3,
+
+    /// <summary>记录无法完成的任务或操作。</summary>
+    Error = 4,
+
+    /// <summary>关闭日志输出。</summary>
+    None = 6
+}
 
 /// <summary>定义日志过滤与轮转的设置。</summary>
 /// <param name="Level">日志最低级别。设为 None 时关闭日志。</param>
@@ -12,7 +29,7 @@ public enum LogLevel { Debug = 1, Information = 2, Warning = 3, Error = 4, None 
 public sealed record LoggingSettings([property: JsonConverter(typeof(LogLevelConverter))] LogLevel Level = LogLevel.Information,
     int FileSizeMb = 10, int FileCount = 10);
 
-// 兼容旧版的日志级别字符串和数值，同时按当前格式写回。
+/// <summary>将旧版日志级别字符串和数值转换为当前配置格式。</summary>
 internal sealed class LogLevelConverter : JsonConverter<LogLevel>
 {
     /// <inheritdoc />
@@ -48,25 +65,61 @@ internal sealed class LogLevelConverter : JsonConverter<LogLevel>
     };
 }
 
-// 兼容测试版写入的 Custom 值，载入时转回自动模式。
-public enum PreviewDecoder { Automatic, HardwarePreferred, Software, Custom }
+/// <summary>定义 VLC 打开新预览时使用的解码策略。</summary>
+public enum PreviewDecoder
+{
+    /// <summary>对 IPTV 使用软解，其他来源由 VLC 自动决定。</summary>
+    Automatic,
 
+    /// <summary>优先尝试 VLC 支持的硬件解码。</summary>
+    HardwarePreferred,
+
+    /// <summary>由 VLC 使用软件解码。</summary>
+    Software,
+
+    /// <summary>旧测试版的兼容值，载入时转换为自动模式。</summary>
+    Custom
+}
+
+/// <summary>保存媒体输出、录制和播放的便携配置。</summary>
+/// <param name="OutputDirectory">自定义输出目录。为空时采用用户下载目录下的 LiveRecorder 文件夹。</param>
+/// <param name="Mode">窗口模式索引。0 为直播录制，1 为 yt-dlp。</param>
+/// <param name="Encoder">转码或回退录制使用的视频编码器。</param>
+/// <param name="Deinterlace">重新编码视频时的去隔行方式。</param>
+/// <param name="PartDurationSeconds">FFmpeg 录制分片的目标时长，单位为秒。</param>
+/// <param name="Reencode">是否默认选择重新编码合并。</param>
+/// <param name="Volume">预览音量百分比。</param>
+/// <param name="Muted">预览是否静音。</param>
 public sealed record MediaSettings(string? OutputDirectory = null, int Mode = 0, VideoEncoder Encoder = VideoEncoder.Software,
     DeinterlaceMode Deinterlace = DeinterlaceMode.Automatic, int PartDurationSeconds = RecordingOptions.DefaultPartDurationSeconds,
     bool Reencode = false,
     int Volume = 100, bool Muted = false)
 {
+    /// <summary>用于媒体编辑和录制回退的编码参数。</summary>
     public EncodingSettings Encoding { get; init; } = new();
+
+    /// <summary>录制发生断流时的检测、重试和等待设置。</summary>
     public RecordingReconnectSettings Reconnect { get; init; } = new();
+
+    /// <summary>下一次打开预览时应用的 VLC 解码方式。</summary>
     public PreviewDecoder PreviewDecoder { get; init; }
 }
 
+/// <summary>保存用户指定的活动工具版本。</summary>
+/// <param name="Ffmpeg">首选 FFmpeg 标签。为空时选择最新的可用版本。</param>
+/// <param name="YtDlp">首选 yt-dlp 标签。为空时选择最新的可用版本。</param>
 public sealed record ToolSettings(string? Ffmpeg = null, string? YtDlp = null);
 
+/// <summary>表示 settings.json 中的应用配置快照。</summary>
 public sealed record AppSettings
 {
+    /// <summary>日志级别和保留配置。</summary>
     public LoggingSettings Logging { get; init; } = new();
+
+    /// <summary>录制、媒体输出和预览配置。</summary>
     public MediaSettings Media { get; init; } = new();
+
+    /// <summary>各媒体工具的首选版本。</summary>
     public ToolSettings Tools { get; init; } = new();
 }
 
@@ -229,5 +282,6 @@ public sealed class PortableConfiguration : IDisposable
             File.Delete(path);
     }
 
+    /// <summary>释放用于协调跨进程配置读写的互斥锁。</summary>
     public void Dispose() => _mutex.Dispose();
 }

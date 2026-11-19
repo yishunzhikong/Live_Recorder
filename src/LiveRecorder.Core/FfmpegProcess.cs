@@ -4,6 +4,9 @@ using System.Text;
 
 namespace LiveRecorder.Core;
 
+/// <summary>表示 FFmpeg 非正常退出，并附带少量诊断以便识别失败原因。</summary>
+/// <param name="exitCode">进程返回的非零退出状态码。</param>
+/// <param name="diagnostics">退出前保留的诊断行。</param>
 internal sealed class FfmpegFailureException(int exitCode, string[] diagnostics) :
     InvalidOperationException($"FFmpeg 退出（{exitCode}）。{Environment.NewLine}{string.Join(Environment.NewLine, diagnostics)}")
 {
@@ -25,6 +28,7 @@ internal static class FfmpegProcess
     /// <param name="videoWritten">可选回调，在进度首次报告已输出视频帧时调用一次。</param>
     /// <param name="readDiagnostic">可选的普通诊断行接收方。</param>
     /// <param name="traceTimestamps">启用包级时间戳诊断，供录制实时码率统计。</param>
+    /// <param name="debug">用于记录子进程启动、退出状态和耗时的可选记录器。</param>
     /// <returns>等待进程退出及管道读取完成的任务。</returns>
     /// <exception cref="FfmpegFailureException">FFmpeg 以非零状态退出，且本次执行不属于宽限停止。</exception>
     /// <exception cref="OperationCanceledException">执行前已取消，或运行中取消且未启用宽限停止。</exception>
