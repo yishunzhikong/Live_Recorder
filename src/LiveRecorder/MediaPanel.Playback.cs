@@ -293,9 +293,7 @@ public sealed partial class MediaPanel
                 "--deinterlace=-1", "--deinterlace-mode=yadif2x"]);
             PreviewPlayer.Clear();
             Media media = session.Media = loadMedia(_vlc, session);
-            // IPTV 预览使用软件解码，避免硬解后的 D3D11 格式转换让 VLC 移除双倍去隔行滤镜。
-            if (session.NetworkSource is { } previewSource && IsDatagramPreview(previewSource))
-                media.AddOption(":avcodec-hw=none");
+            ApplyPreviewDecoder(media, session.NetworkSource);
             WriteWindowLog(LogLevel.Debug, "Playback", session.Producer is null ? "使用 VLC 直接读取媒体。" : "使用管道为 VLC 提供媒体。");
             // VLC 根据原始画幅等比例适应 VideoView，竖屏与宽银幕视频共用 16:9 预览区。
             var player = new MediaPlayer(_vlc) { Scale = 0 };
@@ -315,6 +313,17 @@ public sealed partial class MediaPanel
             // 播放请求成功后仍需监控 VLC 是否真正进入播放状态。
             _ = WatchPreviewStartupAsync(session, token);
         }
+    }
+
+    private static void ApplyPreviewDecoder(Media media, Uri? source)
+    {
+        PreviewDecoder decoder = PortableStorage.Configuration.Current.Media.PreviewDecoder;
+        // 自动模式沿用 IPTV 软件解码，避免硬解后的 D3D11 格式转换让 VLC 移除双倍去隔行滤镜。
+        if (decoder == PreviewDecoder.Software ||
+            decoder == PreviewDecoder.Automatic && source is not null && IsDatagramPreview(source))
+            media.AddOption(":avcodec-hw=none");
+        else if (decoder == PreviewDecoder.HardwarePreferred)
+            media.AddOption(":avcodec-hw=any");
     }
 
     // HTTP 直播可能报告有限的缓存窗口。确认媒体有固定长度后才显示总时长。

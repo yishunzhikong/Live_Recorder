@@ -48,6 +48,9 @@ internal sealed class LogLevelConverter : JsonConverter<LogLevel>
     };
 }
 
+// 兼容测试版写入的 Custom 值，载入时转回自动模式。
+public enum PreviewDecoder { Automatic, HardwarePreferred, Software, Custom }
+
 public sealed record MediaSettings(string? OutputDirectory = null, int Mode = 0, VideoEncoder Encoder = VideoEncoder.Software,
     DeinterlaceMode Deinterlace = DeinterlaceMode.Automatic, int PartDurationSeconds = RecordingOptions.DefaultPartDurationSeconds,
     bool Reencode = false,
@@ -55,6 +58,7 @@ public sealed record MediaSettings(string? OutputDirectory = null, int Mode = 0,
 {
     public EncodingSettings Encoding { get; init; } = new();
     public RecordingReconnectSettings Reconnect { get; init; } = new();
+    public PreviewDecoder PreviewDecoder { get; init; }
 }
 
 public sealed record ToolSettings(string? Ffmpeg = null, string? YtDlp = null);
@@ -205,6 +209,8 @@ public sealed class PortableConfiguration : IDisposable
             {
                 Mode = Math.Clamp(media.Mode, 0, 1),
                 Encoder = Enum.IsDefined(media.Encoder) ? media.Encoder : VideoEncoder.Software,
+                PreviewDecoder = media.PreviewDecoder is PreviewDecoder.HardwarePreferred or PreviewDecoder.Software
+                    ? media.PreviewDecoder : PreviewDecoder.Automatic,
                 Deinterlace = Enum.IsDefined(media.Deinterlace) ? media.Deinterlace : DeinterlaceMode.Automatic,
                 PartDurationSeconds = media.PartDurationSeconds > 0 ? media.PartDurationSeconds : RecordingOptions.DefaultPartDurationSeconds,
                 Volume = Math.Clamp(media.Volume, 0, 100),

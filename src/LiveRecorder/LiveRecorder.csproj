@@ -2,7 +2,7 @@
   <!-- 桌面程序以 x64 非打包方式运行，并随输出提供 Windows App SDK 运行时。 -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <Version>1.3.2</Version>
+    <Version>1.4.0</Version>
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
@@ -28,6 +28,7 @@
     <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.24" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
     <ProjectReference Include="../LiveRecorder.Core/LiveRecorder.Core.csproj" />
+    <EmbeddedResource Include="ApplyPortableUpdate.ps1" LogicalName="LiveRecorder.ApplyPortableUpdate.ps1" />
     <None Include="../../icon/icon.ico" Link="Assets/icon.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- WinUI copies compiled XAML to bin but can omit these files from an unpackaged publish. -->
