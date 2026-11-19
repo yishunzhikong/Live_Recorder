@@ -8,12 +8,11 @@ namespace LiveRecorder;
 // 管理输出位置、录制重连、编码及日志设置的界面和持久化。
 public sealed partial class MainWindow
 {
-    private string _defaultOutput = "";
+    private readonly string _defaultOutput = PortableStorage.DefaultOutputDirectory();
 
     private void RestoreMediaSettings()
     {
         MediaSettings settings = PortableStorage.Configuration.Current.Media;
-        _defaultOutput = PortableStorage.DefaultOutputDirectory();
         MediaPane.AudioSettings = (settings.Volume, settings.Muted);
         ModeBox.SelectedIndex = settings.Mode;
     }
@@ -230,25 +229,26 @@ public sealed partial class MainWindow
     /// <remarks>表单校验或保存失败时保留对话框，并展示错误。</remarks>
     private async Task<bool> ShowOptionsAsync(string title, FrameworkElement content, Action save, double? scrollWidth = null)
     {
-        XamlRoot root = ((FrameworkElement)Content).XamlRoot;
         var error = new InfoBar { Severity = InfoBarSeverity.Error, IsClosable = false };
+        var form = FormPanel(error, content);
+        form.Padding = new Thickness(0, 0, 12, 12);
         var body = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollMode = ScrollMode.Disabled,
-            Content = FormPanel(error, content)
+            Content = form,
+            MaxHeight = Math.Clamp(MainLayout.Height - 196, 80, 550)
         };
-        ((StackPanel)body.Content).Padding = new Thickness(0, 0, 12, 12);
         var dialog = new ContentDialog
         {
-            XamlRoot = root, Title = title, Content = body,
+            Title = title, Content = body,
             PrimaryButtonText = "保存", CloseButtonText = "取消", DefaultButton = ContentDialogButton.Primary
         };
         if (scrollWidth is double targetWidth)
+        {
             dialog.Resources["ContentDialogMaxWidth"] = targetWidth + 48;
-        UpdateBounds();
-        // 随窗口尺寸调整对话框的可滚动区域，确保底部设置可达。
-        root.Changed += RootChanged;
+            body.Width = Math.Clamp(MainLayout.Width - 96, 200, targetWidth);
+        }
         dialog.PrimaryButtonClick += (_, args) =>
         {
             try { save(); }
@@ -262,17 +262,7 @@ public sealed partial class MainWindow
                     WriteWindowLog(LogLevel.Error, "Configuration", $"无法保存「{title}」设置。", ex);
             }
         };
-        try { return await dialog.ShowAsync() == ContentDialogResult.Primary; }
-        finally { root.Changed -= RootChanged; }
-
-        void RootChanged(XamlRoot sender, XamlRootChangedEventArgs args) => UpdateBounds();
-
-        void UpdateBounds()
-        {
-            body.MaxHeight = Math.Clamp(root.Size.Height - 196, 80, 550);
-            if (scrollWidth is double width)
-                body.Width = Math.Clamp(root.Size.Width - 96, 200, width);
-        }
+        return await ShowDialogAsync(dialog) == ContentDialogResult.Primary;
     }
 
     private static StackPanel FormPanel(params UIElement[] controls)

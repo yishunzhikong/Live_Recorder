@@ -1,11 +1,16 @@
+using System.Globalization;
+using System.Runtime.InteropServices;
 using LibVLCSharp.Platforms.Windows;
 using LibVLCSharp.Shared;
 using LiveRecorder.Core;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using SharpDX.DXGI;
 using LogLevel = LiveRecorder.Core.LogLevel;
 
 namespace LiveRecorder;
@@ -14,7 +19,12 @@ namespace LiveRecorder;
 public sealed partial class MediaPanel
 {
     private const string PreviewIdle = "选择预览链接或打开本地视频。";
+    // VLC 3 的 WinRT 视频输出通过这两个 DXGI 私有数据项读取渲染尺寸。
+    private static readonly Guid SwapChainWidth = new("f1b59347-1643-411a-ad6b-c780177a06b6");
+    private static readonly Guid SwapChainHeight = new("6ea976a0-9d60-4bb7-a5a9-7dd1187fc9bd");
     private readonly TaskCompletionSource<string[]> _videoSurface = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private nint _previewSwapChain;
+    private SwapChainPanel? _previewSurface;
     private LibVLC? _vlc;
     private PreviewSession? _preview;
     private DispatcherQueueTimer? _previewClock;
@@ -60,10 +70,60 @@ public sealed partial class MediaPanel
         PreviewSeek.AddHandler(UIElement.PointerCaptureLostEvent, endDrag, true);
     }
 
-    private void PreviewPlayer_Initialized(object sender, InitializedEventArgs e) => _videoSurface.TrySetResult(e.SwapChainOptions);
+    private void PreviewPlayer_Initialized(object sender, InitializedEventArgs e)
+    {
+        const string prefix = "--winrt-swapchain=0x";
+        string? option = Array.Find(e.SwapChainOptions, argument => argument.StartsWith(prefix, StringComparison.Ordinal));
+        if (option is not null)
+            nint.TryParse(option.AsSpan(prefix.Length), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _previewSwapChain);
+        if (VisualTreeHelper.GetChild(PreviewPlayer, 0) is SwapChainPanel panel && _previewSurface != panel)
+        {
+            DetachPreviewSurface();
+            _previewSurface = panel;
+            panel.SizeChanged += PreviewSurface_SizeChanged;
+            panel.CompositionScaleChanged += PreviewSurface_ScaleChanged;
+        }
+        UpdatePreviewSurfaceSize();
+        _videoSurface.TrySetResult(e.SwapChainOptions);
+    }
 
-    /// <summary>调整 16:9 预览尺寸，并将操作区移到预览卡片下方。</summary>
-    /// <param name="sender">尺寸变化的预览槽、预览卡片、标题栏、播放控制栏或操作卡片。</param>
+    private void PreviewPlayer_Unloaded(object sender, RoutedEventArgs e)
+    {
+        _previewSwapChain = 0;
+        DetachPreviewSurface();
+    }
+
+    private void DetachPreviewSurface()
+    {
+        if (_previewSurface is not { } panel)
+            return;
+        panel.SizeChanged -= PreviewSurface_SizeChanged;
+        panel.CompositionScaleChanged -= PreviewSurface_ScaleChanged;
+        _previewSurface = null;
+    }
+
+    private void PreviewSurface_SizeChanged(object sender, SizeChangedEventArgs e) => UpdatePreviewSurfaceSize();
+    private void PreviewSurface_ScaleChanged(SwapChainPanel sender, object args) => UpdatePreviewSurfaceSize();
+
+    private void UpdatePreviewSurfaceSize()
+    {
+        if (_previewSwapChain == 0 || _previewSurface is not { ActualWidth: > 0, ActualHeight: > 0 } panel)
+            return;
+
+        // Viewbox 缩放只改变合成比例。VLC 仍需通过原生 DXGI 标识读取新的宽高。
+        int width = (int)Math.Ceiling(panel.ActualWidth * panel.CompositionScaleX);
+        int height = (int)Math.Ceiling(panel.ActualHeight * panel.CompositionScaleY);
+        Marshal.AddRef(_previewSwapChain);
+        using var swapChain = new SwapChain1(_previewSwapChain);
+        using var size = new SharpDX.DataStream(sizeof(int), canRead: false, canWrite: true);
+        Marshal.WriteInt32(size.DataPointer, width);
+        swapChain.SetPrivateData(SwapChainWidth, sizeof(int), size.DataPointer);
+        Marshal.WriteInt32(size.DataPointer, height);
+        swapChain.SetPrivateData(SwapChainHeight, sizeof(int), size.DataPointer);
+    }
+
+    /// <summary>在操作区和播放控件占用空间之外，尽量放大 16:9 画面。</summary>
+    /// <param name="sender">尺寸变化的右栏、标题栏或播放控制栏。</param>
     /// <param name="e">触发重新计算的尺寸变化。</param>
     private void PreviewLayout_SizeChanged(object sender, SizeChangedEventArgs e)
     {
@@ -73,17 +133,17 @@ public sealed partial class MediaPanel
         double horizontalChrome = padding.Left + padding.Right + margin.Left + margin.Right;
         double verticalChrome = padding.Top + padding.Bottom + margin.Top + margin.Bottom +
             PreviewHeader.ActualHeight + PreviewTransport.ActualHeight;
-        double width = Math.Max(0, Math.Min(PreviewSlot.ActualWidth - horizontalChrome,
-            (PreviewSlot.ActualHeight - verticalChrome) * aspectRatio));
+        double availableHeight = RightLayout.ActualHeight - RightStack.Spacing - OperationsCard.Height - verticalChrome;
+        double width = Math.Max(0, Math.Min(RightLayout.ActualWidth - horizontalChrome, availableHeight * aspectRatio));
         PreviewFrame.Height = width / aspectRatio;
         PreviewCard.Width = width + horizontalChrome;
-        // 操作区继续按内容保留布局高度，视觉位置跟随预览卡片。
-        OperationsOffset.Y = Math.Min(0, PreviewCard.ActualHeight - PreviewSlot.ActualHeight);
-        if (PreviewSlot.ActualHeight > 0 && OperationsCard.ActualHeight > 0)
-        {
-            double visibleHeight = PreviewSlot.ActualHeight + OperationsOffset.Y + RightLayout.RowSpacing + OperationsCard.ActualHeight;
-            VisibleHeightChanged?.Invoke(visibleHeight);
-        }
+    }
+
+    // 右栏在固定逻辑尺寸中顺序布局。只在预览卡片高度变动时同步左栏底边。
+    private void PreviewCard_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.NewSize.Height != e.PreviousSize.Height)
+            VisibleHeightChanged?.Invoke(e.NewSize.Height + RightStack.Spacing + OperationsCard.Height);
     }
 
     private async void PreviewLink_Click(object sender, RoutedEventArgs e)
@@ -219,7 +279,8 @@ public sealed partial class MediaPanel
             PreviewPlayer.Clear();
             Media media = session.Media = loadMedia(_vlc, session);
             WriteWindowLog(LogLevel.Debug, "Playback", session.Producer is null ? "使用 VLC 直接读取媒体。" : "使用管道为 VLC 提供媒体。");
-            var player = new MediaPlayer(_vlc);
+            // VLC 根据原始画幅等比例适应 VideoView，竖屏与宽银幕视频共用 16:9 预览区。
+            var player = new MediaPlayer(_vlc) { Scale = 0 };
             session.Player = player;
             player.Playing += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewPlaying(session, player));
             player.Paused += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewInactive(session, player));

@@ -439,7 +439,7 @@ public sealed partial class MediaService
                             "-segment_format_options", matroska ? "flush_packets=1:cluster_time_limit=1000" : "flush_packets=1:mpegts_flags=+initial_discontinuity",
                             "-segment_time", options.PartDurationSeconds.ToString(CultureInfo.InvariantCulture),
                             "-segment_start_number", "1", "-reset_timestamps", matroska ? "1" : "0", pattern],
-                        progress, watch.Token,
+                        statistics ?? progress, watch.Token,
                         finishOnCancellation: true, readDiagnostic: ReadRecordingDiagnostic, traceTimestamps: statistics is not null);
                     await RecordingParts.PublishAsync(recording, staging, extension, BeginFolder, watch, progress, () =>
                     {
