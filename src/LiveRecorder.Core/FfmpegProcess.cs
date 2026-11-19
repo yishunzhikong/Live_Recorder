@@ -4,6 +4,9 @@ using System.Text;
 
 namespace LiveRecorder.Core;
 
+/// <summary>表示 FFmpeg 非正常退出，并附带少量诊断以便识别失败原因。</summary>
+/// <param name="exitCode">进程返回的非零退出状态码。</param>
+/// <param name="diagnostics">退出前保留的诊断行。</param>
 internal sealed class FfmpegFailureException(int exitCode, string[] diagnostics) :
     InvalidOperationException($"FFmpeg 退出（{exitCode}）。{Environment.NewLine}{string.Join(Environment.NewLine, diagnostics)}")
 {
@@ -25,6 +28,7 @@ internal static class FfmpegProcess
     /// <param name="videoWritten">可选回调，在进度首次报告已输出视频帧时调用一次。</param>
     /// <param name="readDiagnostic">可选的普通诊断行接收方。</param>
     /// <param name="traceTimestamps">启用包级时间戳诊断，供录制实时码率统计。</param>
+    /// <param name="debug">用于记录子进程启动、退出状态和耗时的可选记录器。</param>
     /// <returns>等待进程退出及管道读取完成的任务。</returns>
     /// <exception cref="FfmpegFailureException">FFmpeg 以非零状态退出，且本次执行不属于宽限停止。</exception>
     /// <exception cref="OperationCanceledException">执行前已取消，或运行中取消且未启用宽限停止。</exception>
@@ -38,7 +42,7 @@ internal static class FfmpegProcess
         Func<Stream, CancellationToken, Task>? writeInput = null,
         bool finishOnCancellation = false,
         Action? videoWritten = null,
-        Action<string>? readDiagnostic = null, bool traceTimestamps = false)
+        Action<string>? readDiagnostic = null, bool traceTimestamps = false, DebugTrace? debug = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ProcessStartInfo start = ToolProcess.CreateStartInfo(ToolProcess.RequireExecutable(executable, "FFmpeg"), cacheDirectory);
@@ -65,6 +69,9 @@ internal static class FfmpegProcess
             throw new InvalidOperationException("无法启动 FFmpeg，请在「工具」菜单中检查安装。", ex);
         }
 
+        long started = Stopwatch.GetTimestamp();
+        int pid = process.Id;
+        debug?.Write("FFmpeg", $"启动子进程 PID={pid} · 输入管道={writeInput is not null} · 输出管道={readOutput is not null} · 允许正常收尾={finishOnCancellation}。");
         using var exitMonitoring = new CancellationTokenSource();
         using var inputWriting = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var diagnostics = new Queue<string>();
@@ -98,6 +105,8 @@ internal static class FfmpegProcess
             ToolProcess.Stop(process);
             try { await Task.WhenAll(exit, input, output, errors, stopping).ConfigureAwait(false); }
             catch (Exception) { /* Preserve the original failure. */ }
+            if (debug?.Enabled == true && process.HasExited)
+                debug.Write("FFmpeg", $"子进程 PID={pid} 退出 · 状态码={process.ExitCode} · 已取消={cancellationToken.IsCancellationRequested} · 耗时={Stopwatch.GetElapsedTime(started).TotalSeconds:F2} 秒。");
         }
     }
 

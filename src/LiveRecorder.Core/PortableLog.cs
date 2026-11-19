@@ -51,6 +51,11 @@ public sealed class PortableLog : IDisposable
     public void Write(LogLevel level, string category, string message, Exception? error = null) =>
         Write(level, category, message, error, windowId: null);
 
+    /// <summary>判断当前日志级别是否允许提交指定的日志。</summary>
+    /// <param name="level">待提交日志的级别。</param>
+    /// <returns>该级别达到配置下限且允许输出时返回 <see langword="true" />。</returns>
+    public bool IsEnabled(LogLevel level) => level != LogLevel.None && level >= Volatile.Read(ref _settings).Level;
+
     /// <summary>提交一条可关联到具体窗口的日志。</summary>
     /// <param name="level">日志级别。</param>
     /// <param name="category">用于归类的类别名。</param>
@@ -59,7 +64,7 @@ public sealed class PortableLog : IDisposable
     /// <param name="windowId">进程内窗口编号。为空时只记录进程 ID。</param>
     public void Write(LogLevel level, string category, string message, Exception? error, int? windowId)
     {
-        if (level < Volatile.Read(ref _settings).Level || level == LogLevel.None)
+        if (!IsEnabled(level))
             return;
         // 入队时记录时间和窗口编号。队列满时记下积压数量，避免阻塞界面线程。
         if (!_queue.Writer.TryWrite(new(DateTimeOffset.Now, level, category, message, error, windowId)))

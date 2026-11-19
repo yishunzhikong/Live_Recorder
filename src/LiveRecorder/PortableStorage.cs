@@ -8,16 +8,26 @@ namespace LiveRecorder;
 /// <summary>统一提供工具、缓存、日志和配置的便携存储位置。</summary>
 internal static class PortableStorage
 {
+    /// <summary>便携目录下存放各版本媒体工具的位置。</summary>
     public static string ToolsDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "tools");
+    /// <summary>未发布媒体、外部工具临时文件和更新资源的缓存位置。</summary>
     public static string CacheDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "cache");
+    /// <summary>各应用进程共享的日志目录。</summary>
     public static string LogsDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "logs");
+    /// <summary>便携配置文件所在的目录。</summary>
     public static string ConfigDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "config");
-    // 成品默认进入当前用户的下载目录。内部工作文件仍位于程序目录。
+
+    /// <summary>获取媒体成品使用的默认目录。</summary>
+    /// <returns>当前用户下载目录中的 LiveRecorder 子目录。</returns>
     public static string DefaultOutputDirectory() => Path.Combine(DownloadsDirectory(), "LiveRecorder");
+    /// <summary>当前进程共享的便携配置存储。</summary>
     public static PortableConfiguration Configuration { get; } = new(ConfigDirectory);
+    /// <summary>当前进程所有窗口共用的日志写入器。</summary>
     public static PortableLog Log { get; } = new(LogsDirectory);
+    /// <summary>最近一次初始化中记录的第一个文件访问或配置错误。</summary>
     public static Exception? InitializationError { get; private set; }
 
+    /// <summary>加载便携配置，准备工具、缓存和日志目录，并应用日志档位。</summary>
     public static void Initialize()
     {
         InitializationError = null;
@@ -27,6 +37,9 @@ internal static class PortableStorage
         TryInitialize(() => Directory.CreateDirectory(CacheDirectory));
         TryInitialize(() => Directory.CreateDirectory(LogsDirectory));
         Log.Configure(Configuration.Current.Logging);
+        LoggingSettings logging = Configuration.Current.Logging;
+        MediaSettings media = Configuration.Current.Media;
+        Log.Write(LogLevel.Debug, "Configuration", $"便携配置已载入 · 日志档位={logging.Level} · 单片={logging.FileSizeMb} MB · 保留={logging.FileCount} · 媒体模式={media.Mode} · 预览解码={media.PreviewDecoder} · 录制分片={media.PartDurationSeconds} 秒。");
         if (InitializationError is { } error)
             Log.Write(LogLevel.Warning, "Configuration", "无法初始化便携数据目录或读取配置。", error);
         if (Configuration.RecoveryBackup is { } backup)

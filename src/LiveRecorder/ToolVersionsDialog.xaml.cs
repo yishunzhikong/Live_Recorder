@@ -21,11 +21,21 @@ public sealed partial class ToolVersionsDialog : ContentDialog
     private string ToolName => Tool == MediaTool.Ffmpeg ? "FFmpeg" : "yt-dlp";
     private VersionRow? Selection => VersionList.SelectedItem as VersionRow;
 
+    /// <summary>表示工具版本列表中的显示项。</summary>
+    /// <param name="Tag">工具版本的标签。</param>
+    /// <param name="InUse">是否为程序当前使用的版本。</param>
+    /// <param name="IsUsable">该版本的程序文件是否可用。</param>
     public sealed record VersionRow(string Tag, bool InUse, bool IsUsable)
     {
+        /// <summary>含活动或不可用状态的显示文本。</summary>
         public string Label => InUse ? $"{Tag}  ·  使用中" : IsUsable ? Tag : $"{Tag}  ·  不可用";
     }
 
+    /// <summary>初始化窗口使用的工具版本管理对话框。</summary>
+    /// <param name="updater">读取、安装和删除工具版本的管理器。</param>
+    /// <param name="changed">将本地版本快照同步给宿主窗口的回调。</param>
+    /// <param name="stopPreview">等待预览释放媒体工具的回调。</param>
+    /// <param name="logWindowId">用于关联日志的窗口编号。</param>
     internal ToolVersionsDialog(ToolUpdater updater, Action<MediaTool, ToolInstallation> changed, Func<Task> stopPreview, int logWindowId)
     {
         _updater = updater;
@@ -257,6 +267,7 @@ public sealed partial class ToolVersionsDialog : ContentDialog
 
     /// <summary>请求关闭版本对话框。</summary>
     /// <remarks>如果有任务在执行，先发送取消请求，由任务清理完成后关闭。</remarks>
+    /// <summary>请求取消当前工具任务，并在清理完成后关闭对话框。</summary>
     internal void CancelAndClose()
     {
         _closeRequested = true;

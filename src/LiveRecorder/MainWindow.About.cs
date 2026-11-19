@@ -9,8 +9,12 @@ public sealed partial class MainWindow
     private const string ProjectPage = "https://github.com/yishunzhikong/Live_Recorder";
 
     /// <summary>显示版本、更新操作和项目链接。</summary>
+    /// <param name="sender">触发操作的菜单项。</param>
+    /// <param name="e">菜单点击事件数据。</param>
     private async void About_Click(object sender, RoutedEventArgs e) => await MediaPane.HandlePickerAsync(ShowAboutAsync);
 
+    /// <summary>管理关于对话框的更新检查、下载和退出安装流程。</summary>
+    /// <returns>对话框关闭且待完成的更新操作已经处理的任务。</returns>
     private async Task ShowAboutAsync()
     {
         if (MediaPane.IsBusy || _activeDialog is not null || _closeWhenIdle)

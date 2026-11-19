@@ -17,7 +17,13 @@ public sealed record RecordingMediaProgress(long Attempt, string Container, stri
     long? VideoBytes = null, long? AudioBytes = null, bool VideoReencoded = false, bool AudioReencoded = false);
 
 /// <summary>解析录制轨道及包大小，随 FFmpeg 的媒体时间一起发布累计字节。</summary>
-internal sealed partial class RecordingStatistics(string extension, IProgress<MediaProgress> progress, bool videoReencoded, bool audioReencoded)
+/// <param name="extension">录制分片使用的文件扩展名。</param>
+/// <param name="progress">接收录制尝试、轨道信息和包计数的进度回调。</param>
+/// <param name="videoReencoded">本次尝试是否对视频重新编码。</param>
+/// <param name="audioReencoded">本次尝试是否对音频重新编码。</param>
+/// <param name="debug">接收已识别输出轨道的可选诊断记录器。</param>
+internal sealed partial class RecordingStatistics(string extension, IProgress<MediaProgress> progress, bool videoReencoded, bool audioReencoded,
+    DebugTrace? debug = null)
     : IProgress<MediaProgress>
 {
     private RecordingMediaProgress _current = new(Stopwatch.GetTimestamp(),
@@ -48,6 +54,7 @@ internal sealed partial class RecordingStatistics(string extension, IProgress<Me
             string? fps = video ? MatchValue(FrameRate(), line) : null;
             string description = string.Join(" · ", new[] { codec, format, fps }.OfType<string>());
             _current = video ? _current with { Video = description } : _current with { Audio = description };
+            debug?.Write("Recording", $"识别输出轨道 · 类型={(video ? "视频" : "音频")} · {description}。");
             return;
         }
 

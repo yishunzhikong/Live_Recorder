@@ -18,6 +18,8 @@ public sealed partial class MainWindow
     }
 
     /// <summary>配置新预览会话使用的 VLC 解码方式。</summary>
+    /// <param name="sender">触发设置对话框的菜单项。</param>
+    /// <param name="e">菜单点击事件数据。</param>
     private async void PreviewOptions_Click(object sender, RoutedEventArgs e) => await MediaPane.HandlePickerAsync(async () =>
     {
         var decoder = SettingChoice("预览解码器", (int)PortableStorage.Configuration.Current.Media.PreviewDecoder,
@@ -238,6 +240,12 @@ public sealed partial class MainWindow
     /// <param name="scrollWidth">可选的表单滚动区目标宽度，单位为有效像素。</param>
     /// <returns>保存成功并通过主按钮关闭时返回 <see langword="true" />。</returns>
     /// <remarks>表单校验或保存失败时保留对话框，并展示错误。</remarks>
+    /// <summary>打开设置对话框，在内容通过校验且保存成功后关闭。</summary>
+    /// <param name="title">对话框标题。</param>
+    /// <param name="content">设置表单控件。</param>
+    /// <param name="save">负责校验并保存表单的回调。</param>
+    /// <param name="scrollWidth">可选的表单滚动区域目标宽度。</param>
+    /// <returns>用户确认且设置保存成功时返回 <see langword="true" />。</returns>
     private async Task<bool> ShowOptionsAsync(string title, FrameworkElement content, Action save, double? scrollWidth = null)
     {
         var error = new InfoBar { Severity = InfoBarSeverity.Error, IsClosable = false };
@@ -323,6 +331,7 @@ public sealed partial class MainWindow
             var next = new LoggingSettings(choices[levels.SelectedIndex], (int)size.Value, (int)count.Value);
             PortableStorage.Configuration.Update(current => current with { Logging = next });
             PortableStorage.Log.Configure(next);
+            _debug.Write("Configuration", $"已应用日志设置 · 档位={next.Level} · 单片={next.FileSizeMb} MB · 保留={next.FileCount}。");
         }
     });
 

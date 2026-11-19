@@ -10,10 +10,11 @@ namespace LiveRecorder.Core;
 public sealed class MediaPublishException(string recoveryPath, Exception innerException) :
     IOException($"无法保存媒体文件。已完成的数据保存在 {recoveryPath}。{innerException.Message}", innerException)
 {
+    /// <summary>成品发布失败后保留在缓存中的完整文件路径。</summary>
     public string RecoveryPath { get; } = recoveryPath;
 }
 
-// 将已完成的缓存文件移动到输出目录，并处理 Windows 同名后缀。
+/// <summary>将已完成的缓存文件移动到输出目录，并处理 Windows 同名后缀。</summary>
 internal static class MediaOutput
 {
     private const int DifferentVolume = 17;

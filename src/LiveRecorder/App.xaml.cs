@@ -8,6 +8,7 @@ public partial class App : Application
 {
     private MainWindow? _window;
 
+    /// <summary>初始化应用级 WinUI 资源。</summary>
     public App() => InitializeComponent();
 
     /// <inheritdoc />

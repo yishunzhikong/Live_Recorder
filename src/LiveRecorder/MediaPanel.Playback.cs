@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -27,6 +28,8 @@ public sealed partial class MediaPanel
     private nint _previewSwapChain;
     private SwapChainPanel? _previewSurface;
     private LibVLC? _vlc;
+    private bool _verboseVlc;
+    private int _nativeDiagnosticsRemaining;
     private PreviewSession? _preview;
     private DispatcherQueueTimer? _previewClock;
     private Task _previewCleanup = Task.CompletedTask;
@@ -51,6 +54,7 @@ public sealed partial class MediaPanel
         public StreamMediaInput? Input { get; set; }
         public PreviewStream? Producer { get; private set; }
         public bool Opened { get; set; }
+        public long Started { get; } = Stopwatch.GetTimestamp();
         public Func<Task>? Replay { get; set; }
         public Func<Task>? Fallback { get; set; }
 
@@ -289,8 +293,18 @@ public sealed partial class MediaPanel
             string[] display = await _videoSurface.Task.WaitAsync(TimeSpan.FromSeconds(8), token);
             token.ThrowIfCancellationRequested();
             // 自动识别隔行画面，再按场输出，保留 1080i 等电视直播的运动流畅度。
-            _vlc ??= new LibVLC([.. display, "--ignore-config", "--no-plugins-cache", "--no-video-title-show",
-                "--deinterlace=-1", "--deinterlace-mode=yadif2x"]);
+            bool verbose = _debug?.Enabled == true;
+            if (_vlc is not null && verbose != _verboseVlc)
+                DisposePlayer();
+            if (_vlc is null)
+            {
+                _vlc = new LibVLC([.. display, "--ignore-config", "--no-plugins-cache", "--no-video-title-show",
+                    "--deinterlace=-1", "--deinterlace-mode=yadif2x", .. (verbose ? new[] { "--verbose=2" } : [])]);
+                _verboseVlc = verbose;
+                if (verbose)
+                    _vlc.Log += VlcDiagnostic;
+            }
+            Interlocked.Exchange(ref _nativeDiagnosticsRemaining, 40);
             PreviewPlayer.Clear();
             Media media = session.Media = loadMedia(_vlc, session);
             ApplyPreviewDecoder(media, session.NetworkSource);
@@ -315,12 +329,40 @@ public sealed partial class MediaPanel
         }
     }
 
-    private static void ApplyPreviewDecoder(Media media, Uri? source)
+    /// <summary>记录有限数量的 VLC 解码器、渲染器和去隔行诊断。</summary>
+    /// <param name="sender">发布诊断的 LibVLC 实例。</param>
+    /// <param name="args">包含诊断模块、级别和文本的事件数据。</param>
+    private void VlcDiagnostic(object? sender, LogEventArgs args)
+    {
+        if (_debug?.Enabled != true || Volatile.Read(ref _nativeDiagnosticsRemaining) <= 0)
+            return;
+        // 只记录解码与渲染诊断，避免把媒体地址、请求头和逐帧跟踪传入日志。
+        string message = args.Message ?? "";
+        if (message.StartsWith("Using D3D11VA", StringComparison.Ordinal) ||
+            message.StartsWith("Using DXVA2", StringComparison.Ordinal) ||
+            message.StartsWith("using video decoder module", StringComparison.Ordinal) ||
+            message.StartsWith("using vout display module", StringComparison.Ordinal) ||
+            message.StartsWith("deinterlace ", StringComparison.Ordinal) ||
+            message.StartsWith("Detected interlaced video", StringComparison.Ordinal) ||
+            message.StartsWith("Failed to compensate for the format changes", StringComparison.Ordinal) ||
+            message.StartsWith("picture is too late", StringComparison.Ordinal))
+        {
+            if (Interlocked.Decrement(ref _nativeDiagnosticsRemaining) >= 0)
+                _debug.Write("LibVLC", $"{args.Module} · {args.Level} · {message}");
+        }
+    }
+
+    /// <summary>将预览专用解码策略应用到即将播放的媒体。</summary>
+    /// <param name="media">尚未交给播放器的 VLC 媒体对象。</param>
+    /// <param name="source">用于识别 IPTV 的网络地址。本地文件或音频管道时可为空。</param>
+    private void ApplyPreviewDecoder(Media media, Uri? source)
     {
         PreviewDecoder decoder = PortableStorage.Configuration.Current.Media.PreviewDecoder;
         // 自动模式沿用 IPTV 软件解码，避免硬解后的 D3D11 格式转换让 VLC 移除双倍去隔行滤镜。
-        if (decoder == PreviewDecoder.Software ||
-            decoder == PreviewDecoder.Automatic && source is not null && IsDatagramPreview(source))
+        bool software = decoder == PreviewDecoder.Software ||
+            decoder == PreviewDecoder.Automatic && source is not null && IsDatagramPreview(source);
+        _debug?.Write("Playback", $"预览解码 · 设置={decoder} · VLC 请求={(software ? "软件解码" : "自动选择硬件")} · 去隔行=自动 Yadif 2x。");
+        if (software)
             media.AddOption(":avcodec-hw=none");
         else if (decoder == PreviewDecoder.HardwarePreferred)
             media.AddOption(":avcodec-hw=any");
@@ -345,6 +387,7 @@ public sealed partial class MediaPanel
         {
             session.Opened = true;
             WriteWindowLog(LogLevel.Information, "Playback", "预览开始播放。");
+            _debug?.Write("Playback", $"播放器已进入播放 · 固定时长={session.HasFixedDuration} · 启动耗时={Stopwatch.GetElapsedTime(session.Started).TotalMilliseconds:F0} 毫秒。");
             PreviewPlaceholder.Visibility = Visibility.Collapsed;
             PreviewPlay.IsEnabled = PreviewVolumeButton.IsEnabled = true;
             SetPreviewVolume(player);
@@ -359,6 +402,7 @@ public sealed partial class MediaPanel
     {
         if (_preview != session || (!ended && player.IsPlaying))
             return;
+        _debug?.Write("Playback", $"播放状态变化 · 状态={player.State} · 自然结束={ended} · 媒体位置={player.Time} 毫秒。");
         _previewClock?.Stop();
         SetPreviewPlayButton(false);
         if (ended && session.HasFixedDuration && player.Length > 0)
@@ -512,7 +556,9 @@ public sealed partial class MediaPanel
 
     private async void StopPreview_Click(object sender, RoutedEventArgs e) => await StopPreviewAsync();
 
-    // 同一 RTP 或 UDP 端口开始录制前，先释放占用该端口的预览。
+    /// <summary>开始录制前释放正在占用同一 RTP 或 UDP 端口的预览。</summary>
+    /// <param name="source">用于匹配接收端口的录制地址。为空时释放当前组播预览。</param>
+    /// <returns>等待相关预览资源释放的任务。</returns>
     private Task ReleaseDatagramPreviewAsync(Uri? source = null) =>
         _preview?.NetworkSource is { Scheme: "rtp" or "udp" } active &&
         (source is null || active.Port == source.Port) ? StopPreviewAsync() : _previewCleanup;

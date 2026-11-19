@@ -9,14 +9,42 @@ using System.Text.RegularExpressions;
 
 namespace LiveRecorder.Core;
 
-public enum MediaTool { Ffmpeg, YtDlp }
+/// <summary>标识由工具管理器安装和维护的媒体工具。</summary>
+public enum MediaTool
+{
+    /// <summary>用于录制、下载和媒体编辑的 FFmpeg。</summary>
+    Ffmpeg,
 
+    /// <summary>用于解析网页媒体并下载音轨的 yt-dlp。</summary>
+    YtDlp
+}
+
+/// <summary>描述一次媒体工具安装或升级的结果。</summary>
+/// <param name="Before">操作前验证过的本地版本。没有已装版本时为空。</param>
+/// <param name="After">操作完成后对应的版本。</param>
+/// <param name="Updated">本次是否实际安装了发布资源。</param>
+/// <param name="UsedWebFallback">是否因 API 返回 HTTP 403 而查询官方网页。</param>
 public sealed record ToolUpdateResult(Version? Before, Version After, bool Updated, bool UsedWebFallback);
+
+/// <summary>表示本地工具目录中发现的一个版本。</summary>
+/// <param name="Tag">版本目录对应的标签。</param>
+/// <param name="InUse">应用是否将该版本选为当前使用版本。</param>
 public sealed record ToolVersion(string Tag, bool InUse)
 {
+    /// <summary>可执行文件的结构是否通过静态检查。</summary>
     public bool IsUsable { get; init; } = true;
 }
+
+/// <summary>表示一次扫描得到的已装版本和活动路径。</summary>
+/// <param name="ActiveTag">活动版本标签。没有可用版本时为空。</param>
+/// <param name="ActiveExecutable">活动版本的完整可执行文件路径。</param>
+/// <param name="Versions">发现的本地版本，含需要重装的不可用版本。</param>
 public sealed record ToolInstallation(string? ActiveTag, string? ActiveExecutable, IReadOnlyList<ToolVersion> Versions);
+
+/// <summary>表示一页经过筛选的工具发行版列表。</summary>
+/// <param name="Tags">当前页中可供选择的稳定版本标签。</param>
+/// <param name="NextPage">下一页页码。列表结束时为空。</param>
+/// <param name="UsedWebFallback">本次是否使用官方网页作为查询来源。</param>
 public sealed record ToolReleasePage(IReadOnlyList<string> Tags, int? NextPage, bool UsedWebFallback);
 
 /// <summary>来自 GitHub 稳定发行版的应用更新。</summary>
@@ -25,7 +53,10 @@ public sealed class ApplicationUpdate
     internal ApplicationUpdate(string tag, Version version, string name, Uri address, string sha256, long? size)
         => (Tag, Version, Name, Address, Sha256, Size) = (tag, version, name, address, sha256, size);
 
+    /// <summary>可用安装包所属的 GitHub 发行标签。</summary>
     public string Tag { get; }
+
+    /// <summary>发行标签解析出的程序版本号。</summary>
     public Version Version { get; }
     internal string Name { get; }
     internal Uri Address { get; }
@@ -49,6 +80,7 @@ public sealed class ToolUpdater
     private readonly string _cacheDirectory;
     private readonly HttpClient _http;
     private readonly PortableConfiguration _configuration;
+    private readonly DebugTrace? _debug;
 
     private sealed record Tool(string Name, string Repository)
     {
@@ -62,35 +94,59 @@ public sealed class ToolUpdater
     /// <param name="cacheDirectory">下载和安装暂存根目录。</param>
     /// <param name="http">可选的 HTTP 客户端。省略时使用内置客户端。</param>
     /// <param name="configuration">可选的共享便携配置。省略时从工具目录的同级配置目录载入。</param>
-    public ToolUpdater(string directory, string cacheDirectory, HttpClient? http = null, PortableConfiguration? configuration = null)
+    /// <param name="debug">用于记录发行版查询、安装决策和下载校验的可选记录器。</param>
+    public ToolUpdater(string directory, string cacheDirectory, HttpClient? http = null, PortableConfiguration? configuration = null,
+        DebugTrace? debug = null)
     {
         _directory = directory;
         _cacheDirectory = cacheDirectory;
         _http = http ?? Network;
+        _debug = debug;
         _configuration = configuration ?? new PortableConfiguration(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(directory))!, "config"));
         if (configuration is null)
             _configuration.Load(directory);
     }
 
+    /// <summary>读取指定工具当前使用的程序路径。</summary>
+    /// <param name="tool">需要查询的工具。</param>
+    /// <returns>活动程序的完整路径。没有可用版本时为空。</returns>
     public string? GetExecutable(MediaTool tool) => GetInstallation(tool).ActiveExecutable;
 
+    /// <summary>读取指定工具当前使用的版本标签。</summary>
+    /// <param name="tool">需要查询的工具。</param>
+    /// <returns>活动版本的标签。没有可用版本时为空。</returns>
     public string? GetActiveTag(MediaTool tool) => GetInstallation(tool).ActiveTag;
 
+    /// <summary>枚举便携目录中的工具版本和可用状态。</summary>
+    /// <param name="kind">需要查询的工具。</param>
+    /// <returns>包含当前使用标记的版本列表。</returns>
     public IReadOnlyList<ToolVersion> GetInstalledVersions(MediaTool kind) => GetInstallation(kind).Versions;
 
     /// <summary>通过与媒体工具相同的 API 和网页回退检查应用稳定版。</summary>
+    /// <param name="current">当前应用的主版本、次版本与修订版本号。</param>
+    /// <param name="token">用于取消本次联网查询的令牌。</param>
+    /// <param name="onWebFallback">API 返回 HTTP 403 后切换到官方网页时调用的可选回调。</param>
+    /// <returns>较新的稳定发行包和查询来源标记。没有较新版本时发行包为空。</returns>
     public async Task<(ApplicationUpdate? Update, bool UsedWebFallback)> CheckApplicationUpdateAsync(
         Version current, CancellationToken token, Action? onWebFallback = null)
     {
+        _debug?.Write("Update", $"检查应用发行版 · 当前版本={current}。");
         var (asset, fallback) = await ReadWithWebFallbackAsync(
             ct => ReadApiReleaseAsync(Application, ApplicationAssetName, current, null, ct, prefixedTag: true),
             ct => ReadWebReleaseAsync(Application, ApplicationAssetName, current, null, ct, prefixedTag: true),
             token, onWebFallback).ConfigureAwait(false);
+        _debug?.Write("Update", $"应用更新检查结束 · 新版={asset?.Tag ?? "无"} · 网页回退={fallback}。");
         return (asset is null ? null : new ApplicationUpdate(asset.Tag, asset.Version, asset.Name, asset.Address,
             asset.Sha256, asset.Size), fallback);
     }
 
     /// <summary>下载安装包，并在交给安装程序前核实下载文件的大小与 SHA-256。</summary>
+    /// <param name="update">由稳定发行版检查返回的安装资源。</param>
+    /// <param name="destination">用于新建 ZIP 文件的暂存路径。</param>
+    /// <param name="progress">接收下载字节数的可选回调。</param>
+    /// <param name="token">用于取消下载和校验的令牌。</param>
+    /// <returns>完成下载并通过文件校验的任务。</returns>
+    /// <exception cref="InvalidDataException">下载大小或摘要与发布记录不符。</exception>
     public Task DownloadApplicationUpdateAsync(ApplicationUpdate update, string destination,
         IProgress<MediaProgress>? progress, CancellationToken token) =>
         DownloadAsync(update.Address, update.Size, update.Sha256, destination, progress, token);
@@ -168,9 +224,12 @@ public sealed class ToolUpdater
         }
     }
 
+    /// <summary>清除显式首选版本，让应用自动选用最新的可用版本。</summary>
+    /// <param name="kind">需要更新版本首选项的工具。</param>
     public void SelectLatest(MediaTool kind) =>
         _configuration.Update(settings => WithPreference(settings, Definition(kind), null));
 
+    /// <summary>yt-dlp 配套 Deno 的预期安装路径，文件可能尚未安装。</summary>
     public string DenoPath => Path.Combine(_directory, "deno", DenoVersion, "deno.exe");
 
     /// <summary>查询一页上游正式发行版本。</summary>
@@ -203,6 +262,7 @@ public sealed class ToolUpdater
         timeout.CancelAfter(TimeSpan.FromSeconds(20));
         using var request = CreateApiRequest(tool, $"releases?per_page=30&page={page}");
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        _debug?.Write("Update", $"版本列表查询 · 项目={tool.Name} · API 页={page} · HTTP={(int)response.StatusCode}。");
         EnsureApiSuccess(response);
         await using Stream body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
         using JsonDocument document = await JsonDocument.ParseAsync(body, cancellationToken: timeout.Token).ConfigureAwait(false);
@@ -220,8 +280,14 @@ public sealed class ToolUpdater
         return new ToolReleasePage(tags, hasNext ? page + 1 : null, false);
     }
 
-    // 只有 GitHub API 返回 HTTP 403 时才改查官方发布页。
-    private static async Task<(T Value, bool UsedWebFallback)> ReadWithWebFallbackAsync<T>(
+    /// <summary>优先使用 GitHub API 查询，仅在收到 HTTP 403 时改查官方网页。</summary>
+    /// <typeparam name="T">API 与网页查询共用的结果类型。</typeparam>
+    /// <param name="readApi">发起 API 查询的操作。</param>
+    /// <param name="readWeb">发起官方网页查询的操作。</param>
+    /// <param name="token">用于取消查询和回退的令牌。</param>
+    /// <param name="onWebFallback">切换到官方网页之前调用的可选回调。</param>
+    /// <returns>查询结果以及本次是否切换到官方网页。</returns>
+    private async Task<(T Value, bool UsedWebFallback)> ReadWithWebFallbackAsync<T>(
         Func<CancellationToken, Task<T>> readApi, Func<CancellationToken, Task<T>> readWeb,
         CancellationToken token, Action? onWebFallback)
     {
@@ -232,6 +298,7 @@ public sealed class ToolUpdater
         catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.Forbidden)
         {
             token.ThrowIfCancellationRequested();
+            _debug?.Write("Update", "GitHub API 返回 HTTP 403，切换到官方发布页。");
             onWebFallback?.Invoke();
             return (await readWeb(token).ConfigureAwait(false), true);
         }
@@ -320,6 +387,7 @@ public sealed class ToolUpdater
             .ConfigureAwait(false))
             current = null;
         Version? before = current?.Version;
+        _debug?.Write("Tools", $"检查工具版本 · 工具={tool.Name} · 已验证本地版本={before} · 指定标签={requestedTag ?? "最新稳定版"}。");
         ReleaseAsset? release = null;
         bool usedWebFallback = false;
         if (requestedTag is null || current is null)
@@ -397,7 +465,10 @@ public sealed class ToolUpdater
     private string CreateStagingDirectory() =>
         Directory.CreateDirectory(Path.Combine(_cacheDirectory, $"update-{Guid.NewGuid():N}")).FullName;
 
-    // 按目标版本目录加锁。替换失败时尽量恢复旧目录，恢复失败则保留备份。
+    /// <summary>互斥地发布已验证的工具版本，替换失败时尝试恢复原目录。</summary>
+    /// <param name="staging">包含已验证工具可执行文件的暂存目录。</param>
+    /// <param name="target">要创建或替换的本地版本目录。</param>
+    /// <param name="token">用于取消安装的令牌。</param>
     private void CommitInstallation(string staging, string target, CancellationToken token)
     {
         using Mutex mutex = PortableFileMutex.Create(target);
@@ -445,6 +516,7 @@ public sealed class ToolUpdater
         string endpoint = requestedTag is null ? "latest" : $"tags/{requestedTag}";
         using var request = CreateApiRequest(tool, $"releases/{endpoint}");
         using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        _debug?.Write("Update", $"发行版 API 响应 · 项目={tool.Name} · HTTP={(int)response.StatusCode}。");
         if (response.StatusCode == HttpStatusCode.NotFound && requestedTag is not null)
             throw new InvalidDataException($"GitHub 上找不到 {tool.Name} {requestedTag} 的正式发行版。");
         EnsureApiSuccess(response);
@@ -457,6 +529,7 @@ public sealed class ToolUpdater
         if (release.GetProperty("draft").GetBoolean() || release.GetProperty("prerelease").GetBoolean())
             throw new InvalidDataException("上游未返回有效的稳定版。");
         Version latest = ParseReleaseTag(tag, prefixedTag);
+        _debug?.Write("Update", $"API 返回稳定标签 · 项目={tool.Name} · 标签={tag}。");
         if (before is not null && latest <= before)
             return null;
 
@@ -526,6 +599,7 @@ public sealed class ToolUpdater
             if (requestedTag is not null && requestedTag != tag)
                 throw new InvalidDataException("GitHub 发布页返回的版本与所选版本不匹配。");
             Version latest = ParseReleaseTag(tag, prefixedTag);
+            _debug?.Write("Update", $"官方发布页返回稳定标签 · 项目={tool.Name} · 标签={tag}。");
             if (before is not null && latest <= before)
                 return null;
 
@@ -576,6 +650,7 @@ public sealed class ToolUpdater
         using var response = await _http.GetAsync(address, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
         long size = publishedSize ?? response.Content.Headers.ContentLength ?? 0;
+        _debug?.Write("Update", $"开始下载发行资源 · 文件={Path.GetFileName(address.AbsolutePath)} · 预期字节={size}。");
         if (size <= 0)
             throw new InvalidDataException("GitHub 下载响应未提供文件大小。");
         await using Stream input = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
@@ -604,6 +679,7 @@ public sealed class ToolUpdater
         }
         if (received != size || !Convert.ToHexString(hash.GetHashAndReset()).Equals(sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("下载文件的大小或 SHA-256 与上游记录不符。");
+        _debug?.Write("Update", $"发行资源校验通过 · 字节={received} · SHA-256 匹配。");
     }
 
     private static (string Arguments, string Pattern) VersionCheck(MediaTool kind) => kind == MediaTool.Ffmpeg

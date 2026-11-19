@@ -12,14 +12,19 @@ public sealed partial class MainWindow : Window
     private static int _nextLogWindowId;
     // 窗口编号在进程内递增，与 PID 组合后可区分同一日志目录中的事件。
     private readonly int _logWindowId = Interlocked.Increment(ref _nextLogWindowId);
+    private readonly DebugTrace _debug;
     private readonly nint _handle;
     private readonly WindowPlacement _placement;
     private ContentDialog? _activeDialog;
     private bool _closeWhenIdle;
     private bool _closingAfterCleanup;
 
+    /// <summary>初始化窗口、便携工具、媒体面板及原生窗口尺寸约束。</summary>
     public MainWindow()
     {
+        _debug = new DebugTrace(PortableStorage.Log, _logWindowId);
+        _toolUpdater = new ToolUpdater(PortableStorage.ToolsDirectory, PortableStorage.CacheDirectory,
+            configuration: PortableStorage.Configuration, debug: _debug);
         (_webAnalyzer, _ffmpegPath) = ResolveMediaTools();
         InitializeComponent();
         MainLayout.Width = WindowPlacement.LayoutWidth;
@@ -52,6 +57,7 @@ public sealed partial class MainWindow : Window
 
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
         _placement = new WindowPlacement(AppWindow, _handle);
+        _debug.Write("Window", $"初始窗口 · 宽={AppWindow.Size.Width} · 高={AppWindow.Size.Height} · 原生比例约束={_placement.IsResizeConstrained}。");
         if (!_placement.IsResizeConstrained)
             WriteWindowLog(LogLevel.Warning, "Window", "无法启用边框比例缩放，内容仍按原比例显示。");
         AppWindow.Closing += Window_Closing;
@@ -69,6 +75,7 @@ public sealed partial class MainWindow : Window
 
         dialog.XamlRoot = DialogLayer.XamlRoot;
         _activeDialog = dialog;
+        _debug.Write("Window", $"打开应用对话框 · 类型={dialog.GetType().Name}。");
         try
         {
             DialogLayer.Children.Add(dialog);
@@ -78,6 +85,7 @@ public sealed partial class MainWindow : Window
         {
             DialogLayer.Children.Remove(dialog);
             _activeDialog = null;
+            _debug.Write("Window", $"关闭应用对话框 · 类型={dialog.GetType().Name}。");
             CloseWhenReady();
         }
     }

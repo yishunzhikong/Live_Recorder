@@ -1,3 +1,12 @@
+<#
+.SYNOPSIS
+等待便携应用退出后替换程序文件，并重新启动 Live Recorder。
+.PARAMETER ParentProcessId
+启动更新的 Live Recorder 进程编号。
+.NOTES
+更新脚本与新版文件暂存在同一个程序目录中。日志、配置和工具目录保留。
+替换过程中发生错误时，尝试恢复已移动的原安装文件。
+#>
 param([Parameter(Mandatory = $true)][int]$ParentProcessId)
 
 $ErrorActionPreference = 'Stop'
