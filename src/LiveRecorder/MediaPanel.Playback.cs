@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Runtime.InteropServices;
 using LibVLCSharp.Platforms.Windows;
 using LibVLCSharp.Shared;
@@ -203,6 +204,18 @@ public sealed partial class MediaPanel
         return media;
     }
 
+    private static bool IsDatagramPreview(Uri source)
+    {
+        if (source.Scheme is "rtp" or "udp")
+            return true;
+        // IPTV 网关也会通过 /rtp/组播地址:端口 等 HTTP 路径提供媒体流。
+        ReadOnlySpan<char> path = source.AbsolutePath;
+        return source.Scheme is "http" or "https" &&
+            (path.StartsWith("/rtp/", StringComparison.OrdinalIgnoreCase) ||
+             path.StartsWith("/udp/", StringComparison.OrdinalIgnoreCase)) &&
+            IPEndPoint.TryParse(path[5..], out _);
+    }
+
     private Task PlayAudioStreamAsync(WebVideoLink audio) => OpenPreviewAsync(audio.Label, null, (vlc, session) =>
     {
         PreviewMessage.Text = "正在缓冲音频…";
@@ -275,9 +288,14 @@ public sealed partial class MediaPanel
             }
             string[] display = await _videoSurface.Task.WaitAsync(TimeSpan.FromSeconds(8), token);
             token.ThrowIfCancellationRequested();
-            _vlc ??= new LibVLC([.. display, "--ignore-config", "--no-plugins-cache", "--no-video-title-show"]);
+            // 自动识别隔行画面，再按场输出，保留 1080i 等电视直播的运动流畅度。
+            _vlc ??= new LibVLC([.. display, "--ignore-config", "--no-plugins-cache", "--no-video-title-show",
+                "--deinterlace=-1", "--deinterlace-mode=yadif2x"]);
             PreviewPlayer.Clear();
             Media media = session.Media = loadMedia(_vlc, session);
+            // IPTV 预览使用软件解码，避免硬解后的 D3D11 格式转换让 VLC 移除双倍去隔行滤镜。
+            if (session.NetworkSource is { } previewSource && IsDatagramPreview(previewSource))
+                media.AddOption(":avcodec-hw=none");
             WriteWindowLog(LogLevel.Debug, "Playback", session.Producer is null ? "使用 VLC 直接读取媒体。" : "使用管道为 VLC 提供媒体。");
             // VLC 根据原始画幅等比例适应 VideoView，竖屏与宽银幕视频共用 16:9 预览区。
             var player = new MediaPlayer(_vlc) { Scale = 0 };
