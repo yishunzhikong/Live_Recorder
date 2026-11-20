@@ -39,6 +39,10 @@ public sealed partial class MainWindow : Window
             CloseWhenReady();
         };
         SourceBox.TextChanged += (_, _) => PublishMediaSource();
+        WebCookiesCheckBox.Checked += (_, _) => WebCookieSourceChanged();
+        WebCookiesCheckBox.Unchecked += (_, _) => WebCookieSourceChanged();
+        WebCookieBrowserBox.SelectionChanged += (_, _) => WebCookieSourceChanged();
+        WebCookieFileBox.TextChanging += WebCookieFile_TextChanging;
         PublishMediaSource();
         MediaPane.SetStatus("就绪", "粘贴媒体链接，或选择要处理的本地文件。", LogLevel.Debug);
         ModeBox.SelectionChanged += Mode_SelectionChanged;
@@ -125,7 +129,7 @@ public sealed partial class MainWindow : Window
     private void SetControlsEnabled(bool enabled)
     {
         ToolsMenu.IsEnabled = enabled;
-        foreach (Control control in new Control[] { ModeBox, WebSourceBox, AnalyzeWebButton, SourceBox })
+        foreach (Control control in new Control[] { ModeBox, WebSourceBox, WebCookiesCheckBox, AnalyzeWebButton, SourceBox })
             control.IsEnabled = enabled;
         UpdateWebActions(enabled);
     }
