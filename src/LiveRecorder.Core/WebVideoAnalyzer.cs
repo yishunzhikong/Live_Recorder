@@ -17,6 +17,12 @@ public sealed record WebVideoLink(string Label, string Url, bool AudioOnly, stri
     /// <summary>访问该媒体地址时允许转发的请求头。没有声明时为空。</summary>
     public MediaRequestHeaders? Headers { get; init; }
 
+    /// <summary>是否为可按原始 FLAC 解封装的 HTTP(S) 音轨。</summary>
+    public bool IsDirectFlac { get; init; }
+
+    /// <summary>重新提取音轨时是否使用分析时指定的 Cookie 来源。</summary>
+    public bool UsesCookies => CookieBrowser is not null || CookieFile is not null;
+
     /// <summary>音轨重新提取时沿用的浏览器名称。为空时不读取浏览器 Cookie。</summary>
     internal string? CookieBrowser { get; init; }
 
@@ -99,7 +105,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         using var process = new Process
         {
             StartInfo = CreateStartInfo(
-                [.. AudioOptions(link, ToolProcess.RequireExecutable(ffmpeg, "FFmpeg")), "--extract-audio", "--audio-format", "m4a",
+                [.. AudioOptions(link), "--ffmpeg-location", ToolProcess.RequireExecutable(ffmpeg, "FFmpeg"), "--extract-audio", "--audio-format", "m4a",
                     "--output", "audio.%(ext)s", "--quiet"], link.PageUrl, link.CookieBrowser, snapshot?.Path, Path.GetFullPath(directory))
         };
         Start(process);
@@ -127,28 +133,36 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
 
     /// <summary>重新提取所选音轨，并将音频通过管道提供给预览播放器。</summary>
     /// <param name="link">分析时选中的纯音频格式。</param>
-    /// <param name="ffmpeg">FFmpeg 可执行文件路径。</param>
+    /// <param name="ffmpeg">非原始 FLAC 音轨供流使用的 FFmpeg 可执行文件路径。</param>
     /// <param name="token">用于停止预览供流的取消令牌。</param>
     /// <returns>带进程监控的预览流。调用方负责异步释放。</returns>
     public PreviewStream OpenAudioPreview(WebVideoLink link, string? ffmpeg, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
-        string executable = ToolProcess.RequireExecutable(ffmpeg, "FFmpeg");
-        string inputArgs = link.IsLive ? "-rw_timeout 15000000" : "-rw_timeout 15000000 -re";
         CookieSnapshot? snapshot = CopyCookieFile(link.CookieFile);
         try
         {
-            ProcessStartInfo start = CreateStartInfo(
-                [.. AudioOptions(link, executable), "--output", "-", "--no-part", "--quiet",
-                    // 允许 FFmpeg 在 HTTP 文件末尾查找媒体索引。
-                    "--downloader", "ffmpeg",
-                    "--downloader-args", $"ffmpeg_i:{inputArgs}",
-                    // MPEG-TS 为不可寻址的预览管道提供播放时钟。
-                    "--downloader-args", "ffmpeg_o:-vn -c:a aac -b:a 160k -f mpegts -muxdelay 0.1 -flush_packets 1"],
-                link.PageUrl, link.CookieBrowser, snapshot?.Path);
-            start.Environment["PATH"] = Path.GetDirectoryName(executable) + Path.PathSeparator
-                + Environment.GetEnvironmentVariable("PATH");
-            debug?.Write("yt-dlp", $"准备网页音轨预览 · 直播={link.IsLive} · 管道=MPEG-TS/AAC。");
+            string[] options = [.. AudioOptions(link), "--output", "-", "--no-part", "--quiet"];
+            ProcessStartInfo start;
+            if (link.IsDirectFlac)
+            {
+                // 使用 yt-dlp 自己的 HTTP Cookie 会话，保留 FLAC 字节和原始音质。
+                start = CreateStartInfo([.. options, "--downloader", "native"], link.PageUrl, link.CookieBrowser, snapshot?.Path);
+            }
+            else
+            {
+                string executable = ToolProcess.RequireExecutable(ffmpeg, "FFmpeg");
+                string inputArgs = link.IsLive ? "-rw_timeout 15000000" : "-rw_timeout 15000000 -re";
+                start = CreateStartInfo(
+                    [.. options, "--ffmpeg-location", executable, "--downloader", "ffmpeg",
+                        "--downloader-args", $"ffmpeg_i:{inputArgs}",
+                        // MPEG-TS 为不可寻址的预览管道提供播放时钟。
+                        "--downloader-args", "ffmpeg_o:-vn -c:a aac -b:a 160k -f mpegts -muxdelay 0.1 -flush_packets 1"],
+                    link.PageUrl, link.CookieBrowser, snapshot?.Path);
+                start.Environment["PATH"] = Path.GetDirectoryName(executable) + Path.PathSeparator
+                    + Environment.GetEnvironmentVariable("PATH");
+            }
+            debug?.Write("yt-dlp", $"准备网页音轨预览 · 直播={link.IsLive} · 管道={(link.IsDirectFlac ? "原始 FLAC" : "MPEG-TS/AAC")}。");
             return PreviewStream.Start(start, "yt-dlp 无法在线播放所选音频。", token, debug, snapshot,
                 includeDiagnostics: snapshot is null);
         }
@@ -160,13 +174,12 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
     }
 
     // 用解析时选中的格式 ID 重新从原网页取流，避免取到其他音轨。
-    private static string[] AudioOptions(WebVideoLink link, string ffmpeg)
+    private static string[] AudioOptions(WebVideoLink link)
     {
         if (!link.AudioOnly || string.IsNullOrWhiteSpace(link.FormatId) || !IsHttpUrl(link.PageUrl))
             throw new ArgumentException("请重新分析网页并选择有效的音频格式。");
         string formatId = link.FormatId.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("'", "\\'", StringComparison.Ordinal);
-        return ["--format", $"best*[format_id='{formatId}']", "--no-simulate", "--abort-on-unavailable-fragments",
-            "--ffmpeg-location", ffmpeg];
+        return ["--format", $"best*[format_id='{formatId}']", "--no-simulate", "--abort-on-unavailable-fragments"];
     }
 
     /// <summary>构造 yt-dlp 进程参数，并指定 Cookie 来源。</summary>
@@ -303,7 +316,8 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
             string? extension = StringProperty(format, "ext")?.ToLowerInvariant();
             if (video is null && extension is "aac" or "flac" or "m4a" or "mp3" or "oga" or "opus" or "wav" or "weba")
                 video = "none";
-            if ((video == "none" && audio == "none") || StringProperty(format, "protocol") == "mhtml")
+            string? protocol = StringProperty(format, "protocol");
+            if ((video == "none" && audio == "none") || protocol == "mhtml")
                 return;
 
             (string role, int order) = (video, audio) switch
@@ -320,6 +334,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
             candidates.Add((new WebVideoLink(label, url, video == "none", pageUrl, formatId, isLive)
             {
                 Headers = MediaRequestHeaders.FromExtractor(ReadHeaders(format), ReadHeaders(media)),
+                IsDirectFlac = video == "none" && extension == "flac" && protocol is null or "http" or "https",
                 CookieBrowser = cookieBrowser,
                 CookieFile = cookieFile
             }, order));

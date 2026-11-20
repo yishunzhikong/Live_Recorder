@@ -189,13 +189,29 @@ public sealed partial class MediaPanel
         }, format, input: input);
     }
 
+    /// <summary>预览网页音轨，必要时用 yt-dlp 保留解析会话的请求条件。</summary>
+    /// <param name="audio">用户选择的 yt-dlp 音轨。</param>
+    /// <returns>预览启动任务。</returns>
     private Task PreviewWebAudioAsync(WebVideoLink audio)
     {
         var source = new Uri(audio.Url);
         if (audio.Headers?.Origin is not null)
             return PlayAudioStreamAsync(audio);
-        return OpenPreviewAsync(audio.Label, source, (vlc, _) => CreateNetworkMedia(vlc, source.AbsoluteUri, audio.Headers), audio,
-            () => PlayAudioStreamAsync(audio));
+        // VLC 直接打开直链时不会读取 yt-dlp 的 Cookie。带 Cookie 提取的 FLAC 优先由 yt-dlp 重新取流。
+        if (audio.IsDirectFlac && audio.UsesCookies)
+        {
+            _debug?.Write("Playback", "FLAC 使用带 Cookie 的 yt-dlp 管道预览。");
+            return PlayAudioStreamAsync(audio, () => PlayDirectAsync(fallback: null));
+        }
+        return PlayDirectAsync(() => PlayAudioStreamAsync(audio));
+
+        Task PlayDirectAsync(Func<Task>? fallback) => OpenPreviewAsync(audio.Label, source, (vlc, _) =>
+        {
+            Media media = CreateNetworkMedia(vlc, source.AbsoluteUri, audio.Headers);
+            if (audio.IsDirectFlac)
+                media.AddOption(":demux=flac");
+            return media;
+        }, audio, fallback);
     }
 
     private static Media CreateNetworkMedia(LibVLC vlc, string location, MediaRequestHeaders? headers)
@@ -220,11 +236,12 @@ public sealed partial class MediaPanel
             IPEndPoint.TryParse(path[5..], out _);
     }
 
-    private Task PlayAudioStreamAsync(WebVideoLink audio) => OpenPreviewAsync(audio.Label, null, (vlc, session) =>
+    private Task PlayAudioStreamAsync(WebVideoLink audio, Func<Task>? fallback = null) => OpenPreviewAsync(audio.Label, null, (vlc, session) =>
     {
         PreviewMessage.Text = "正在缓冲音频…";
-        return session.FromStream(vlc, _webAnalyzer.OpenAudioPreview(audio, _ffmpegPath, session.Cancellation.Token));
-    }, audio);
+        string demux = audio.IsDirectFlac ? ":demux=flac" : ":demux=ts";
+        return session.FromStream(vlc, _webAnalyzer.OpenAudioPreview(audio, _ffmpegPath, session.Cancellation.Token), demux);
+    }, audio, fallback);
 
     private async void PlayFile_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
     {
