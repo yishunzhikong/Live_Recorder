@@ -52,6 +52,7 @@ public sealed partial class MediaPanel
         public Media? Media { get; set; }
         public MediaPlayer? Player { get; set; }
         public StreamMediaInput? Input { get; set; }
+        public FileStream? BufferedAudio { get; set; }
         public PreviewStream? Producer { get; private set; }
         public bool Opened { get; set; }
         public long Started { get; } = Stopwatch.GetTimestamp();
@@ -197,21 +198,16 @@ public sealed partial class MediaPanel
         var source = new Uri(audio.Url);
         if (audio.Headers?.Origin is not null)
             return PlayAudioStreamAsync(audio);
-        // VLC 直接打开直链时不会读取 yt-dlp 的 Cookie。带 Cookie 提取的 FLAC 优先由 yt-dlp 重新取流。
-        if (audio.IsDirectFlac && audio.UsesCookies)
-        {
-            _debug?.Write("Playback", "FLAC 使用带 Cookie 的 yt-dlp 管道预览。");
-            return PlayAudioStreamAsync(audio, () => PlayDirectAsync(fallback: null));
-        }
-        return PlayDirectAsync(() => PlayAudioStreamAsync(audio));
-
-        Task PlayDirectAsync(Func<Task>? fallback) => OpenPreviewAsync(audio.Label, source, (vlc, _) =>
+        return OpenPreviewAsync(audio.Label, source, (vlc, session) =>
         {
             Media media = CreateNetworkMedia(vlc, source.AbsoluteUri, audio.Headers);
             if (audio.IsDirectFlac)
+            {
                 media.AddOption(":demux=flac");
+                session.HasFixedDuration = !audio.IsLive;
+            }
             return media;
-        }, audio, fallback);
+        }, audio, () => PlayAudioStreamAsync(audio));
     }
 
     private static Media CreateNetworkMedia(LibVLC vlc, string location, MediaRequestHeaders? headers)
@@ -236,12 +232,54 @@ public sealed partial class MediaPanel
             IPEndPoint.TryParse(path[5..], out _);
     }
 
-    private Task PlayAudioStreamAsync(WebVideoLink audio, Func<Task>? fallback = null) => OpenPreviewAsync(audio.Label, null, (vlc, session) =>
+    private Task PlayAudioStreamAsync(WebVideoLink audio)
     {
-        PreviewMessage.Text = "正在缓冲音频…";
-        string demux = audio.IsDirectFlac ? ":demux=flac" : ":demux=ts";
-        return session.FromStream(vlc, _webAnalyzer.OpenAudioPreview(audio, _ffmpegPath, session.Cancellation.Token), demux);
-    }, audio, fallback);
+        if (audio.IsDirectFlac && !audio.IsLive)
+        {
+            return OpenPreviewAsync(audio.Label, null, (vlc, session) =>
+            {
+                session.Input = new StreamMediaInput(session.BufferedAudio!);
+                return new Media(vlc, session.Input, ":demux=flac");
+            }, audio, prepareMusic: session => BufferFlacPreviewAsync(session, audio));
+        }
+
+        return OpenPreviewAsync(audio.Label, null, (vlc, session) =>
+        {
+            PreviewMessage.Text = "正在缓冲音频…";
+            string demux = audio.IsDirectFlac ? ":demux=flac" : ":demux=ts";
+            return session.FromStream(vlc, _webAnalyzer.OpenAudioPreview(audio, _ffmpegPath, session.Cancellation.Token), demux);
+        }, audio);
+    }
+
+    /// <summary>将无法直放的有限长度 FLAC 缓冲到可寻址的临时文件，供 VLC 按时钟播放。</summary>
+    /// <param name="session">负责取消缓冲并释放缓存文件的预览会话。</param>
+    /// <param name="audio">包含格式和 Cookie 来源的选中音轨。</param>
+    /// <returns>缓冲完成且文件已从头就绪的任务。</returns>
+    private async Task BufferFlacPreviewAsync(PreviewSession session, WebVideoLink audio)
+    {
+        PreviewMessage.Text = "正在缓冲 FLAC 音频…";
+        Directory.CreateDirectory(PortableStorage.CacheDirectory);
+        string path = Path.Combine(PortableStorage.CacheDirectory, $"preview-audio-{Guid.NewGuid():N}.flac");
+        var file = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920,
+            FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+        session.BufferedAudio = file;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(session.Cancellation.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(75));
+        try
+        {
+            await using var producer = _webAnalyzer.OpenAudioPreview(audio, _ffmpegPath, timeout.Token);
+            await producer.Content.CopyToAsync(file, timeout.Token);
+            await producer.Completion;
+            if (file.Length == 0)
+                throw new InvalidOperationException("yt-dlp 没有返回 FLAC 音频数据。");
+            file.Position = 0;
+            session.HasFixedDuration = true;
+        }
+        catch (OperationCanceledException) when (!session.Cancellation.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("FLAC 音频缓冲超时。");
+        }
+    }
 
     private async void PlayFile_Click(object sender, RoutedEventArgs e) => await HandlePickerAsync(async () =>
     {
@@ -269,9 +307,11 @@ public sealed partial class MediaPanel
     /// <param name="format">可选的 yt-dlp 格式与请求头信息。</param>
     /// <param name="fallback">可选的操作，在当前媒体尚未开始播放便失败时执行。</param>
     /// <param name="input">可选的当前网络媒体快照，用于共享 HLS 选流。</param>
+    /// <param name="prepareMusic">备用音乐预览所需的异步准备操作。</param>
     /// <returns>完成启动处理的任务。任务返回时播放器可能仍在缓冲。</returns>
     private async Task OpenPreviewAsync(string title, Uri? networkSource, Func<LibVLC, PreviewSession, Media> loadMedia,
-        WebVideoLink? format = null, Func<Task>? fallback = null, Input? input = null)
+        WebVideoLink? format = null, Func<Task>? fallback = null, Input? input = null,
+        Func<PreviewSession, Task>? prepareMusic = null)
     {
         if (_closeWhenIdle)
             return;
@@ -280,7 +320,7 @@ public sealed partial class MediaPanel
         Task previous = StopPreviewAsync();
         var session = new PreviewSession(networkSource, format)
         {
-            Replay = () => OpenPreviewAsync(title, networkSource, loadMedia, format, fallback, input),
+            Replay = () => OpenPreviewAsync(title, networkSource, loadMedia, format, fallback, input, prepareMusic),
             Fallback = fallback
         };
         _preview = session;
@@ -302,6 +342,11 @@ public sealed partial class MediaPanel
             await Task.Yield();
             await previous;
             CancellationToken token = session.Cancellation.Token;
+            if (prepareMusic is not null)
+            {
+                token.ThrowIfCancellationRequested();
+                await prepareMusic(session);
+            }
             if (input is not null)
             {
                 session.Selection = await SelectInputAsync(input, token);
@@ -419,6 +464,11 @@ public sealed partial class MediaPanel
     {
         if (_preview != session || (!ended && player.IsPlaying))
             return;
+        if (ended && !session.Opened && session.Fallback is not null && session.WebFormat?.AudioOnly == true)
+        {
+            _ = PreviewFailedAsync(session, "音频直链未返回可播放的数据。");
+            return;
+        }
         _debug?.Write("Playback", $"播放状态变化 · 状态={player.State} · 自然结束={ended} · 媒体位置={player.Time} 毫秒。");
         _previewClock?.Stop();
         SetPreviewPlayButton(false);
@@ -560,7 +610,7 @@ public sealed partial class MediaPanel
             return;
         if (!session.Opened && session.Fallback is { } fallback)
         {
-            WriteWindowLog(LogLevel.Warning, "Playback", "音频直放失败，切换到备用媒体管道。");
+            WriteWindowLog(LogLevel.Warning, "Playback", "音频直放失败，切换到备用预览。");
             session.Fallback = null;
             await fallback();
             return;
@@ -627,6 +677,7 @@ public sealed partial class MediaPanel
         {
             DisposePreviewResource(session.Media);
             DisposePreviewResource(session.Input);
+            DisposePreviewResource(session.BufferedAudio);
             try
             {
                 if (session.Producer is { } producer)
