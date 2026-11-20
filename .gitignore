@@ -1,4 +1,6 @@
 /Request.md
+**/config/cookies.txt
+**/config/cookies-*.tmp
 /reference/
 /tools/
 /.dsh-acl-recovery/

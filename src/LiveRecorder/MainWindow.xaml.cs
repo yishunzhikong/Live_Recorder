@@ -39,9 +39,10 @@ public sealed partial class MainWindow : Window
             CloseWhenReady();
         };
         SourceBox.TextChanged += (_, _) => PublishMediaSource();
-        WebCookiesCheckBox.Checked += (_, _) => ResetWebAnalysis();
-        WebCookiesCheckBox.Unchecked += (_, _) => ResetWebAnalysis();
-        WebCookieBrowserBox.SelectionChanged += (_, _) => ResetWebAnalysis();
+        WebCookiesCheckBox.Checked += (_, _) => WebCookieSourceChanged();
+        WebCookiesCheckBox.Unchecked += (_, _) => WebCookieSourceChanged();
+        WebCookieBrowserBox.SelectionChanged += (_, _) => WebCookieSourceChanged();
+        WebCookieFileBox.TextChanging += WebCookieFile_TextChanging;
         PublishMediaSource();
         MediaPane.SetStatus("就绪", "粘贴媒体链接，或选择要处理的本地文件。", LogLevel.Debug);
         ModeBox.SelectionChanged += Mode_SelectionChanged;

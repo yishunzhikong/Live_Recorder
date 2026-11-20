@@ -57,8 +57,8 @@
                                             <ColumnDefinition Width="Auto" />
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
-                                        <CheckBox x:Name="WebCookiesCheckBox" Content="使用浏览器 Cookie" VerticalAlignment="Bottom" />
-                                        <ComboBox x:Name="WebCookieBrowserBox" Grid.Column="1" Header="浏览器" Visibility="Collapsed"
+                                        <CheckBox x:Name="WebCookiesCheckBox" Content="使用 Cookie" VerticalAlignment="Bottom" />
+                                        <ComboBox x:Name="WebCookieBrowserBox" Grid.Column="1" Header="Cookie 来源" Visibility="Collapsed"
                                                   IsEnabled="False" HorizontalAlignment="Stretch" SelectedIndex="0">
                                             <ComboBoxItem Content="Microsoft Edge" Tag="edge" />
                                             <ComboBoxItem Content="Google Chrome" Tag="chrome" />
@@ -68,8 +68,14 @@
                                             <ComboBoxItem Content="Opera" Tag="opera" />
                                             <ComboBoxItem Content="Vivaldi" Tag="vivaldi" />
                                             <ComboBoxItem Content="Whale" Tag="whale" />
+                                            <ComboBoxItem Content="cookies.txt" Tag="file" />
                                         </ComboBox>
                                     </Grid>
+                                    <StackPanel x:Name="WebCookieFileSettings" Spacing="4" Visibility="Collapsed">
+                                        <TextBox x:Name="WebCookieFileBox" Header="config/cookies.txt" AcceptsReturn="True" Height="120"
+                                                 PlaceholderText="粘贴 Netscape 格式的 cookies.txt 内容" />
+                                        <TextBlock x:Name="WebCookieFileStatus" TextWrapping="Wrap" Visibility="Collapsed" />
+                                    </StackPanel>
                                     <Button x:Name="AnalyzeWebButton" Content="分析链接" Click="AnalyzeWeb_Click" />
                                     <TextBlock x:Name="WebVideoTitle" TextWrapping="Wrap" />
                                     <ComboBox x:Name="WebFormatBox" Header="媒体格式" DisplayMemberPath="Label"

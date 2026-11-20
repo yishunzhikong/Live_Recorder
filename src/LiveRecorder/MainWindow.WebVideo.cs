@@ -11,6 +11,13 @@ public sealed partial class MainWindow
 
     private WebVideoAnalyzer _webAnalyzer;
     private AppMode _mode;
+    private bool _loadingCookieFile;
+    private string? _cookieFileError;
+
+    /// <summary>返回当前启用的 Cookie 来源，关闭时为空。</summary>
+    private string? WebCookieSource => WebCookiesCheckBox.IsChecked == true
+        ? (WebCookieBrowserBox.SelectedItem as ComboBoxItem)?.Tag as string
+        : null;
     // 两个模式分别保留状态区内容，切换时恢复对应的提示。
     private readonly (string Title, string Detail)[] _modeStatus =
     [
@@ -54,6 +61,59 @@ public sealed partial class MainWindow
 
     private void WebSource_TextChanged(object sender, TextChangedEventArgs e) => ResetWebAnalysis();
 
+    /// <summary>切换 Cookie 来源时读取已保存的文件并清除旧解析结果。</summary>
+    private void WebCookieSourceChanged()
+    {
+        if (WebCookieSource == "file")
+        {
+            _loadingCookieFile = true;
+            try
+            {
+                WebCookieFileBox.Text = File.ReadAllText(PortableStorage.CookieFile);
+                SetCookieFileError(null);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+            {
+                WebCookieFileBox.Text = "";
+                SetCookieFileError(null);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                SetCookieFileError("无法读取 config/cookies.txt。请检查程序目录的访问权限。");
+            }
+            finally { _loadingCookieFile = false; }
+        }
+        ResetWebAnalysis();
+    }
+
+    /// <summary>编辑 Cookie 时保存文本，同时使旧的媒体链接失效。</summary>
+    /// <param name="sender">Cookie 编辑框。</param>
+    /// <param name="e">文本变更事件。</param>
+    private void WebCookieFile_TextChanging(TextBox sender, TextBoxTextChangingEventArgs e)
+    {
+        if (_loadingCookieFile || WebCookieSource != "file")
+            return;
+        try
+        {
+            PortableStorage.SaveCookieFile(sender.Text);
+            SetCookieFileError(null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            SetCookieFileError("无法保存 config/cookies.txt。请检查程序目录的写入权限。");
+        }
+        ResetWebAnalysis();
+    }
+
+    /// <summary>在编辑框下方显示 Cookie 文件错误。</summary>
+    /// <param name="message">错误提示。为空时隐藏提示。</param>
+    private void SetCookieFileError(string? message)
+    {
+        _cookieFileError = message;
+        WebCookieFileStatus.Text = message ?? "";
+        WebCookieFileStatus.Visibility = message is null ? Visibility.Collapsed : Visibility.Visible;
+    }
+
     /// <summary>在网页地址或 Cookie 选项变化后清空旧的解析结果。</summary>
     private void ResetWebAnalysis()
     {
@@ -74,10 +134,13 @@ public sealed partial class MainWindow
         MediaPane.SetStatus("分析中", "正在识别网页中的视频格式…", LogLevel.Debug);
         try
         {
-            string? cookieBrowser = WebCookiesCheckBox.IsChecked == true
-                ? (WebCookieBrowserBox.SelectedItem as ComboBoxItem)?.Tag as string
-                : null;
-            WebVideoAnalysis result = await _webAnalyzer.AnalyzeAsync(WebSourceBox.Text, token, cookieBrowser);
+            string? cookieSource = WebCookieSource;
+            bool useCookieFile = cookieSource == "file";
+            if (useCookieFile && (_cookieFileError is not null || string.IsNullOrWhiteSpace(WebCookieFileBox.Text)))
+                throw new InvalidOperationException(_cookieFileError ?? "请先粘贴 Netscape 格式的 cookies.txt 内容。");
+            WebVideoAnalysis result = await _webAnalyzer.AnalyzeAsync(WebSourceBox.Text, token,
+                cookieBrowser: useCookieFile ? null : cookieSource,
+                cookieFile: useCookieFile ? PortableStorage.CookieFile : null);
             WebVideoTitle.Text = result.Title;
             WebFormatBox.ItemsSource = result.Links;
             WebFormatBox.SelectedIndex = 0;
@@ -101,9 +164,11 @@ public sealed partial class MainWindow
 
     private void UpdateWebActions(bool enabled)
     {
-        bool useBrowserCookies = WebCookiesCheckBox.IsChecked == true;
-        WebCookieBrowserBox.Visibility = useBrowserCookies ? Visibility.Visible : Visibility.Collapsed;
-        WebCookieBrowserBox.IsEnabled = enabled && useBrowserCookies;
+        bool useCookies = WebCookiesCheckBox.IsChecked == true;
+        WebCookieBrowserBox.Visibility = useCookies ? Visibility.Visible : Visibility.Collapsed;
+        WebCookieBrowserBox.IsEnabled = enabled && useCookies;
+        WebCookieFileSettings.Visibility = WebCookieSource == "file" ? Visibility.Visible : Visibility.Collapsed;
+        WebCookieFileBox.IsEnabled = enabled;
         WebFormatBox.IsEnabled = enabled && WebFormatBox.Items.Count > 0;
     }
 

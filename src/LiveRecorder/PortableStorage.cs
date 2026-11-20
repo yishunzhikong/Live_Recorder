@@ -16,6 +16,26 @@ internal static class PortableStorage
     public static string LogsDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "logs");
     /// <summary>便携配置文件所在的目录。</summary>
     public static string ConfigDirectory { get; } = Path.Combine(AppContext.BaseDirectory, "config");
+    /// <summary>用户粘贴的 Netscape Cookie 文件，供 yt-dlp 读取。</summary>
+    public static string CookieFile { get; } = Path.Combine(ConfigDirectory, "cookies.txt");
+
+    /// <summary>以 UTF-8 原子替换便携 Cookie 文件。</summary>
+    /// <param name="text">Cookie 编辑框的内容。</param>
+    public static void SaveCookieFile(string text)
+    {
+        Directory.CreateDirectory(ConfigDirectory);
+        string pending = Path.Combine(ConfigDirectory, $"cookies-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            File.WriteAllText(pending, text.ReplaceLineEndings().TrimStart('\uFEFF'));
+            File.Move(pending, CookieFile, overwrite: true);
+        }
+        finally
+        {
+            try { File.Delete(pending); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+    }
 
     /// <summary>获取媒体成品使用的默认目录。</summary>
     /// <returns>当前用户下载目录中的 LiveRecorder 子目录。</returns>
