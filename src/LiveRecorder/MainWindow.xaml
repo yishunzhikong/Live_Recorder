@@ -72,7 +72,20 @@
                                         </ComboBox>
                                     </Grid>
                                     <StackPanel x:Name="WebCookieFileSettings" Spacing="4" Visibility="Collapsed">
-                                        <TextBox x:Name="WebCookieFileBox" Header="config/cookies.txt" AcceptsReturn="True" Height="120"
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="粘贴 Netscape 格式的 Cookie" TextWrapping="Wrap" VerticalAlignment="Center" />
+                                            <HyperlinkButton Grid.Column="1" Content="Edge 插件" Padding="4"
+                                                             NavigateUri="https://microsoftedge.microsoft.com/addons/detail/cookieeditor/neaplmfkghagebokkhpjpoebhdledlfi" />
+                                            <HyperlinkButton Grid.Column="2" Content="Chrome 插件" Padding="4"
+                                                             NavigateUri="https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm" />
+                                        </Grid>
+                                        <TextBox x:Name="WebCookieFileBox" AutomationProperties.Name="粘贴 Netscape 格式的 Cookie"
+                                                 AcceptsReturn="True" Height="120"
                                                  PlaceholderText="粘贴 Netscape 格式的 cookies.txt 内容" />
                                         <TextBlock x:Name="WebCookieFileStatus" TextWrapping="Wrap" Visibility="Collapsed" />
                                     </StackPanel>
