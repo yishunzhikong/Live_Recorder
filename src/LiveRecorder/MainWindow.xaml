@@ -60,6 +60,7 @@
                                         <CheckBox x:Name="WebCookiesCheckBox" Content="使用 Cookie" VerticalAlignment="Bottom" />
                                         <ComboBox x:Name="WebCookieBrowserBox" Grid.Column="1" Header="Cookie 来源" Visibility="Collapsed"
                                                   IsEnabled="False" HorizontalAlignment="Stretch" SelectedIndex="0">
+                                            <ComboBoxItem Content="cookies.txt" Tag="file" />
                                             <ComboBoxItem Content="Microsoft Edge" Tag="edge" />
                                             <ComboBoxItem Content="Google Chrome" Tag="chrome" />
                                             <ComboBoxItem Content="Mozilla Firefox" Tag="firefox" />
@@ -68,7 +69,6 @@
                                             <ComboBoxItem Content="Opera" Tag="opera" />
                                             <ComboBoxItem Content="Vivaldi" Tag="vivaldi" />
                                             <ComboBoxItem Content="Whale" Tag="whale" />
-                                            <ComboBoxItem Content="cookies.txt" Tag="file" />
                                         </ComboBox>
                                     </Grid>
                                     <StackPanel x:Name="WebCookieFileSettings" Spacing="4" Visibility="Collapsed">

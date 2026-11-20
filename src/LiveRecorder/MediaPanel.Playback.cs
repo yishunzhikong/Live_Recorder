@@ -367,6 +367,8 @@ public sealed partial class MediaPanel
                     _vlc.Log += VlcDiagnostic;
             }
             Interlocked.Exchange(ref _nativeDiagnosticsRemaining, 40);
+            // 纯音频没有视频帧刷新 SwapChain，让预览区直接显示固定尺寸的深色背景。
+            PreviewPlayer.Visibility = format?.AudioOnly == true ? Visibility.Collapsed : Visibility.Visible;
             PreviewPlayer.Clear();
             Media media = session.Media = loadMedia(_vlc, session);
             ApplyPreviewDecoder(media, session.NetworkSource);
@@ -374,6 +376,11 @@ public sealed partial class MediaPanel
             // VLC 根据原始画幅等比例适应 VideoView，竖屏与宽银幕视频共用 16:9 预览区。
             var player = new MediaPlayer(_vlc) { Scale = 0 };
             session.Player = player;
+            if (format is null)
+            {
+                player.ESAdded += (_, _) => DispatcherQueue.TryEnqueue(() => UpdatePreviewVideoVisibility(session, player));
+                player.ESDeleted += (_, _) => DispatcherQueue.TryEnqueue(() => UpdatePreviewVideoVisibility(session, player));
+            }
             player.Playing += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewPlaying(session, player));
             player.Paused += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewInactive(session, player));
             player.EndReached += (_, _) => DispatcherQueue.TryEnqueue(() => PreviewInactive(session, player, ended: true));
@@ -448,6 +455,7 @@ public sealed partial class MediaPanel
         if (!session.Opened)
         {
             session.Opened = true;
+            UpdatePreviewVideoVisibility(session, player);
             WriteWindowLog(LogLevel.Information, "Playback", "预览开始播放。");
             _debug?.Write("Playback", $"播放器已进入播放 · 固定时长={session.HasFixedDuration} · 启动耗时={Stopwatch.GetElapsedTime(session.Started).TotalMilliseconds:F0} 毫秒。");
             PreviewPlaceholder.Visibility = Visibility.Collapsed;
@@ -458,6 +466,17 @@ public sealed partial class MediaPanel
         _previewClock.Start();
         SetPreviewPlayButton(true);
         RefreshPreviewTimeline(session, player);
+    }
+
+    /// <summary>仅在确认预览源为纯音频时隐藏视频表面。</summary>
+    /// <param name="session">触发播放或轨道变化的预览会话。</param>
+    /// <param name="player">用于查询已探测轨道的 VLC 播放器。</param>
+    private void UpdatePreviewVideoVisibility(PreviewSession session, MediaPlayer player)
+    {
+        if (_preview != session || !session.Opened)
+            return;
+        bool audioOnly = session.WebFormat?.AudioOnly ?? (player.AudioTrackCount > 0 && player.VideoTrackCount <= 0);
+        PreviewPlayer.Visibility = audioOnly ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void PreviewInactive(PreviewSession session, MediaPlayer player, bool ended = false)
