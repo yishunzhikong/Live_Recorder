@@ -16,6 +16,9 @@ public sealed record WebVideoLink(string Label, string Url, bool AudioOnly, stri
 {
     /// <summary>访问该媒体地址时允许转发的请求头。没有声明时为空。</summary>
     public MediaRequestHeaders? Headers { get; init; }
+
+    /// <summary>音轨重新提取时沿用的浏览器名称。为空时不读取浏览器 Cookie。</summary>
+    internal string? CookieBrowser { get; init; }
 }
 
 /// <summary>表示一次网页媒体分析得到的标题和格式列表。</summary>
@@ -33,10 +36,11 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
     /// <summary>从网页提取用于预览或下载的 HTTP(S) 直链。</summary>
     /// <param name="address">包含媒体的网页地址。</param>
     /// <param name="token">用于中止分析的取消令牌。</param>
+    /// <param name="cookieBrowser">yt-dlp 读取 Cookie 的浏览器名称。为空时不读取。</param>
     /// <returns>页面标题和可选格式列表。</returns>
     /// <exception cref="ArgumentException">输入不是有效的 HTTP(S) 地址。</exception>
     /// <exception cref="InvalidDataException">未得到可用的媒体直链。</exception>
-    public async Task<WebVideoAnalysis> AnalyzeAsync(string address, CancellationToken token)
+    public async Task<WebVideoAnalysis> AnalyzeAsync(string address, CancellationToken token, string? cookieBrowser = null)
     {
         address = address.Trim();
         if (!IsHttpUrl(address))
@@ -45,17 +49,20 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
         timeout.CancelAfter(TimeSpan.FromSeconds(75));
-        using var process = new Process { StartInfo = CreateStartInfo(["--skip-download", "--dump-single-json"], address) };
+        using var process = new Process
+        {
+            StartInfo = CreateStartInfo(["--skip-download", "--dump-single-json"], address, cookieBrowser)
+        };
         Start(process);
         long started = Stopwatch.GetTimestamp();
-        debug?.Write("yt-dlp", $"开始提取网页媒体格式 · 子进程 PID={process.Id} · Deno 可用={File.Exists(deno)} · 超时=75 秒。");
+        debug?.Write("yt-dlp", $"开始提取网页媒体格式 · 子进程 PID={process.Id} · Deno 可用={File.Exists(deno)} · 浏览器 Cookie={cookieBrowser is not null} · 超时=75 秒。");
 
         Task<JsonDocument> output = JsonDocument.ParseAsync(process.StandardOutput.BaseStream, cancellationToken: timeout.Token);
         Task<string> errors = ToolProcess.ReadDiagnosticTailAsync(process.StandardError);
         try
         {
             await WaitForSuccessAsync(process, errors, "yt-dlp 无法分析此网页。", timeout.Token).ConfigureAwait(false);
-            WebVideoAnalysis analysis = Parse((await output.ConfigureAwait(false)).RootElement, address);
+            WebVideoAnalysis analysis = Parse((await output.ConfigureAwait(false)).RootElement, address, cookieBrowser);
             if (debug?.Enabled == true)
                 debug.Write("yt-dlp", $"格式提取完成 · 格式数={analysis.Links.Count} · 音频格式数={analysis.Links.Count(link => link.AudioOnly)} · 含直播格式={analysis.Links.Any(link => link.IsLive)} · 耗时={Stopwatch.GetElapsedTime(started).TotalSeconds:F2} 秒。");
             return analysis;
@@ -86,7 +93,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         {
             StartInfo = CreateStartInfo(
                 [.. AudioOptions(link, ToolProcess.RequireExecutable(ffmpeg, "FFmpeg")), "--extract-audio", "--audio-format", "m4a",
-                    "--output", "audio.%(ext)s", "--quiet"], link.PageUrl, Path.GetFullPath(directory))
+                    "--output", "audio.%(ext)s", "--quiet"], link.PageUrl, link.CookieBrowser, Path.GetFullPath(directory))
         };
         Start(process);
 
@@ -128,7 +135,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
                 "--downloader-args", $"ffmpeg_i:{inputArgs}",
                 // A transport stream carries a clock for VLC when the input pipe cannot seek.
                 "--downloader-args", "ffmpeg_o:-vn -c:a aac -b:a 160k -f mpegts -muxdelay 0.1 -flush_packets 1"],
-            link.PageUrl);
+            link.PageUrl, link.CookieBrowser);
         start.Environment["PATH"] = Path.GetDirectoryName(executable) + Path.PathSeparator
             + Environment.GetEnvironmentVariable("PATH");
         debug?.Write("yt-dlp", $"准备网页音轨预览 · 直播={link.IsLive} · 管道=MPEG-TS/AAC。");
@@ -145,17 +152,24 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
             "--ffmpeg-location", ffmpeg];
     }
 
-    private ProcessStartInfo CreateStartInfo(string[] options, string address, string? directory = null)
+    /// <summary>构造 yt-dlp 进程参数，并按需让 yt-dlp 读取所选浏览器的 Cookie。</summary>
+    /// <param name="options">当前操作使用的参数。</param>
+    /// <param name="address">要提取的网页地址。</param>
+    /// <param name="cookieBrowser">浏览器名称。为空时省略 Cookie 参数。</param>
+    /// <param name="directory">可选的进程工作目录。</param>
+    /// <returns>可直接用于启动进程的配置。</returns>
+    private ProcessStartInfo CreateStartInfo(string[] options, string address, string? cookieBrowser, string? directory = null)
     {
         ProcessStartInfo start = ToolProcess.CreateStartInfo(RequireExecutable(), cacheDirectory, directory);
         start.RedirectStandardOutput = true;
         start.RedirectStandardError = true;
         start.StandardErrorEncoding = Encoding.UTF8;
+        string[] cookieOptions = cookieBrowser is null ? [] : ["--cookies-from-browser", cookieBrowser];
         string[] arguments =
         [
             "--ignore-config", "--no-plugin-dirs", "--no-cache-dir", "--no-playlist", "--playlist-items", "1",
             "--encoding", "utf-8", "--socket-timeout", "15", "--retries", "1", "--extractor-retries", "1",
-            "--js-runtimes", "deno:" + deno, .. options, "--", address
+            "--js-runtimes", "deno:" + deno, .. cookieOptions, .. options, "--", address
         ];
         foreach (string argument in arguments)
             start.ArgumentList.Add(argument);
@@ -185,7 +199,7 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
         throw new InvalidOperationException(message.Length == 0 ? fallback : message);
     }
 
-    private static WebVideoAnalysis Parse(JsonElement media, string address)
+    private static WebVideoAnalysis Parse(JsonElement media, string address, string? cookieBrowser)
     {
         while (media.TryGetProperty("entries", out JsonElement entries) && entries.ValueKind == JsonValueKind.Array)
         {
@@ -242,7 +256,8 @@ public sealed class WebVideoAnalyzer(string? executable, string deno, string cac
             string label = string.Join(" · ", new[] { role, resolution, extension?.ToUpperInvariant(), formatId }.OfType<string>());
             candidates.Add((new WebVideoLink(label, url, video == "none", pageUrl, formatId, isLive)
             {
-                Headers = MediaRequestHeaders.FromExtractor(ReadHeaders(format), ReadHeaders(media))
+                Headers = MediaRequestHeaders.FromExtractor(ReadHeaders(format), ReadHeaders(media)),
+                CookieBrowser = cookieBrowser
             }, order));
         }
     }

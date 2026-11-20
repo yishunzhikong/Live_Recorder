@@ -52,6 +52,24 @@
                                 <StackPanel x:Name="WebSettings" Spacing="10" Visibility="Collapsed">
                                     <TextBox x:Name="WebSourceBox" Header="网页视频链接" PlaceholderText="粘贴包含视频的网页地址"
                                              InputScope="Url" TextChanged="WebSource_TextChanged" />
+                                    <Grid ColumnSpacing="12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox x:Name="WebCookiesCheckBox" Content="使用浏览器 Cookie" VerticalAlignment="Bottom" />
+                                        <ComboBox x:Name="WebCookieBrowserBox" Grid.Column="1" Header="浏览器" Visibility="Collapsed"
+                                                  IsEnabled="False" HorizontalAlignment="Stretch" SelectedIndex="0">
+                                            <ComboBoxItem Content="Microsoft Edge" Tag="edge" />
+                                            <ComboBoxItem Content="Google Chrome" Tag="chrome" />
+                                            <ComboBoxItem Content="Mozilla Firefox" Tag="firefox" />
+                                            <ComboBoxItem Content="Brave" Tag="brave" />
+                                            <ComboBoxItem Content="Chromium" Tag="chromium" />
+                                            <ComboBoxItem Content="Opera" Tag="opera" />
+                                            <ComboBoxItem Content="Vivaldi" Tag="vivaldi" />
+                                            <ComboBoxItem Content="Whale" Tag="whale" />
+                                        </ComboBox>
+                                    </Grid>
                                     <Button x:Name="AnalyzeWebButton" Content="分析链接" Click="AnalyzeWeb_Click" />
                                     <TextBlock x:Name="WebVideoTitle" TextWrapping="Wrap" />
                                     <ComboBox x:Name="WebFormatBox" Header="媒体格式" DisplayMemberPath="Label"

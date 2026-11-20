@@ -52,12 +52,15 @@ public sealed partial class MainWindow
         }
     }
 
-    // 网页输入变化后清空旧解析结果，避免套用上一个页面的直链。
-    private void WebSource_TextChanged(object sender, TextChangedEventArgs e)
+    private void WebSource_TextChanged(object sender, TextChangedEventArgs e) => ResetWebAnalysis();
+
+    /// <summary>在网页地址或 Cookie 选项变化后清空旧的解析结果。</summary>
+    private void ResetWebAnalysis()
     {
-        if (WebFormatBox is null || MediaPane is null)
+        if (WebFormatBox is null || WebLinkBox is null || MediaPane is null)
             return;
         WebFormatBox.ItemsSource = null;
+        WebLinkBox.Text = "";
         WebVideoTitle.Text = "";
         UpdateWebActions(!MediaPane.IsBusy);
         PublishMediaSource();
@@ -71,7 +74,10 @@ public sealed partial class MainWindow
         MediaPane.SetStatus("分析中", "正在识别网页中的视频格式…", LogLevel.Debug);
         try
         {
-            WebVideoAnalysis result = await _webAnalyzer.AnalyzeAsync(WebSourceBox.Text, token);
+            string? cookieBrowser = WebCookiesCheckBox.IsChecked == true
+                ? (WebCookieBrowserBox.SelectedItem as ComboBoxItem)?.Tag as string
+                : null;
+            WebVideoAnalysis result = await _webAnalyzer.AnalyzeAsync(WebSourceBox.Text, token, cookieBrowser);
             WebVideoTitle.Text = result.Title;
             WebFormatBox.ItemsSource = result.Links;
             WebFormatBox.SelectedIndex = 0;
@@ -95,6 +101,9 @@ public sealed partial class MainWindow
 
     private void UpdateWebActions(bool enabled)
     {
+        bool useBrowserCookies = WebCookiesCheckBox.IsChecked == true;
+        WebCookieBrowserBox.Visibility = useBrowserCookies ? Visibility.Visible : Visibility.Collapsed;
+        WebCookieBrowserBox.IsEnabled = enabled && useBrowserCookies;
         WebFormatBox.IsEnabled = enabled && WebFormatBox.Items.Count > 0;
     }
 
